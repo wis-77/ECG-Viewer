@@ -1240,10 +1240,12 @@ $('btnPrint').onclick = sendToPrint;
 const DRIVE_API_KEY = '';
 const KEY_STORE = 'ecgViewer.driveKey';
 
+let urlKey = '';   // per ?key=… übergeben (wird sofort aus der Adresszeile entfernt)
 function driveKey() {
     if (DRIVE_API_KEY) return DRIVE_API_KEY;
+    if (urlKey) return urlKey;
     let k = '';
-    try { k = localStorage.getItem(KEY_STORE) || ''; } catch (e) {}
+    try { k = sessionStorage.getItem(KEY_STORE) || localStorage.getItem(KEY_STORE) || ''; } catch (e) {}
     if (!k) {
         k = (prompt('Google-Drive-API-Key (wird nur in diesem Browser gespeichert):') || '').trim();
         if (k) { try { localStorage.setItem(KEY_STORE, k); } catch (e) {} }
@@ -1310,10 +1312,17 @@ async function loadDrive(input) {
 $('driveGo').onclick = () => loadDrive($('driveIn').value);
 $('driveIn').addEventListener('keydown', e => { if (e.key === 'Enter') loadDrive($('driveIn').value); });
 $('btnDrive').onclick = () => { const v = prompt('Google-Drive-Link oder Datei-ID:'); if (v) loadDrive(v); };
-// Start per Link: index.html?id=<DATEI-ID>
+// Start per Link: index.html?id=<DATEI-ID>[&key=<API-KEY>]   (oder ?drive=<codierter Freigabelink>)
 {
     const q = new URLSearchParams(location.search);
     const start = q.get('id') || q.get('drive');
+    const k = q.get('key');
+    if (k) {
+        urlKey = k.trim();
+        try { sessionStorage.setItem(KEY_STORE, urlKey); } catch (e) {}   // übersteht ein Neuladen im selben Tab
+        q.delete('key');                                                  // Key nicht in Verlauf/Adresszeile stehen lassen
+        try { const u = new URL(location.href); u.search = q.toString() ? '?' + q.toString() : ''; window.history.replaceState(null, '', u); } catch (e) {}
+    }
     if (start) loadDrive(start);
 }
 
