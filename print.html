@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ECG Print View</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 0; background-color: #f4f7f6; color: #333;
+        }
+
+        .header-bar {
+            background: linear-gradient(135deg, #112233 0%, #1a3a5f 100%);
+            color: white; padding: 10px 16px;
+            display: flex; justify-content: space-between; align-items: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+        .header-bar h1 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+
+        .container { max-width: 1200px; margin: 10px auto; padding: 0 10px; }
+
+        .print-settings {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            background: #ffffff;
+            padding: 12px 15px;
+            border-radius: 8px;
+            margin-bottom: 12px;
+            border: 1px solid #dcdfe6;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+            align-items: center;
+        }
+
+        .setting-field {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .setting-field label {
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .time-stepper-container {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            background: #f8f9fa;
+            padding: 3px 6px;
+            border-radius: 6px;
+            border: 1px solid #ced4da;
+        }
+
+        .time-display-box {
+            font-size: 0.95rem;
+            font-weight: bold;
+            color: #1a3a5f;
+            padding: 4px 10px;
+            min-width: 85px;
+            text-align: center;
+            background: #fff;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+        }
+
+        .btn-stepper {
+            background-color: #e9ecef;
+            color: #212529;
+            border: 1px solid #adb5bd;
+            border-radius: 4px;
+            padding: 5px 10px;
+            font-size: 0.8rem;
+            font-weight: bold;
+            cursor: pointer;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        .btn-stepper:active { background-color: #3b82f6; color: white; }
+
+        .setting-field input, .setting-field select {
+            padding: 6px 8px;
+            font-size: 0.85rem;
+            border-radius: 6px;
+            border: 1px solid #ced4da;
+            background-color: #fff;
+            height: 36px;
+        }
+
+        .btn {
+            background-color: #1890ff; color: white; border: none;
+            padding: 6px 14px; border-radius: 6px; cursor: pointer;
+            font-size: 0.85rem; font-weight: 600; transition: background 0.2s;
+            height: 36px; display: inline-flex; align-items: center; justify-content: center;
+            user-select: none;
+            touch-action: manipulation;
+        }
+        .btn:hover { background-color: #40a9ff; }
+        .btn-success { background-color: #28a745; }
+        .btn-success:hover { background-color: #218838; }
+        .btn-secondary { background-color: #6c757d; }
+        .btn-secondary:hover { background-color: #5a6268; }
+
+        .print-preview-area {
+            background: #ccd1d9;
+            padding: 15px;
+            border-radius: 8px;
+            overflow-x: auto;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start; /* CRITICAL FIX: prevents left cutoff on scroll! */
+            border: 1px solid #aab2bd;
+            min-height: 400px;
+            width: 100%;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .page-scale-wrapper {
+            transform-origin: top left;
+            margin-bottom: 15px;
+            flex-shrink: 0;
+        }
+
+        .ecg-print-page {
+            background: #ffffff;
+            width: 297mm;
+            height: 210mm;
+            padding: 12mm 15mm 10mm 15mm;
+            box-sizing: border-box;
+            position: relative;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: flex-start;
+        }
+
+        .print-page-header {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1.5px solid #1a3a5f;
+            padding-bottom: 5px;
+            margin-bottom: 8px;
+            font-size: 10pt;
+            color: #1a3a5f;
+            font-weight: bold;
+        }
+
+        .print-page-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 8.5pt;
+            font-weight: normal;
+            color: #444;
+            align-items: flex-end;
+        }
+
+        .ecg-rows-container {
+            display: flex;
+            flex-direction: column;
+            gap: 5mm;
+            flex-grow: 1;
+            justify-content: flex-start;
+        }
+
+        .ecg-print-row {
+            width: 250mm;
+            height: 35mm;
+            position: relative;
+            border: 1px solid #ff9999;
+            background-color: #fffdfd;
+            overflow: hidden;
+            flex-shrink: 0;
+        }
+
+        .ecg-grid-overlay {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        .ecg-trace-svg {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 2;
+        }
+
+        .row-time-label {
+            position: absolute;
+            bottom: 1px;
+            left: 2px;
+            font-size: 8.5pt;
+            color: #112233;
+            z-index: 3;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: bold;
+            border: 0.5px solid #ff9999;
+        }
+
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            .print-preview-area, .print-preview-area * {
+                visibility: visible;
+            }
+            .header-bar, .print-settings, .btn {
+                display: none !important;
+            }
+            .container {
+                max-width: none; margin: 0; padding: 0;
+            }
+            .print-preview-area {
+                background: none;
+                padding: 0;
+                border: none;
+                overflow: visible;
+                display: block;
+            }
+            .page-scale-wrapper {
+                transform: none !important;
+                margin-bottom: 0;
+                width: auto !important;
+                height: auto !important;
+            }
+            .ecg-print-page {
+                box-shadow: none;
+                margin-bottom: 0;
+                page-break-after: always;
+                page-break-inside: avoid;
+            }
+            @page {
+                size: A4 landscape;
+                margin: 0;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="header-bar">
+        <h1>ECG Print View (25 mm/s)</h1>
+        <button class="btn btn-secondary" onclick="closeView()">Schließen</button>
+    </div>
+
+    <div class="container">
+        <div class="print-settings">
+            <div class="setting-field">
+                <label>Start-Tageszeit (+/- verschieben):</label>
+                <div class="time-stepper-container">
+                    <button class="btn-stepper" onclick="shiftStartTime(-10)">-10s</button>
+                    <button class="btn-stepper" onclick="shiftStartTime(-1)">-1s</button>
+                    <span id="start-time-display" class="time-display-box">--:--:--</span>
+                    <button class="btn-stepper" onclick="shiftStartTime(1)">+1s</button>
+                    <button class="btn-stepper" onclick="shiftStartTime(10)">+10s</button>
+                </div>
+            </div>
+
+            <div class="setting-field">
+                <label for="print-rows-count">Zeilenanzahl:</label>
+                <input type="number" id="print-rows-count" value="4" min="1" max="100" onchange="generatePrintPages()">
+            </div>
+
+            <div class="setting-field">
+                <label for="print-amplitude">Y-Skalierung (µV/cm):</label>
+                <select id="print-amplitude" onchange="generatePrintPages()">
+                    <option value="500">500 µV / cm</option>
+                    <option value="1000" selected>1000 µV / cm (Standard)</option>
+                    <option value="2000">2000 µV / cm</option>
+                </select>
+            </div>
+
+            <div class="setting-field">
+                <label>Vorschau-Zoom:</label>
+                <button class="btn btn-secondary" id="btn-fit-toggle" onclick="toggleFitMode()" style="height:36px;">Anpassen</button>
+            </div>
+
+            <div class="setting-field" style="margin-left: auto;">
+                <label>&nbsp;</label>
+                <button class="btn btn-success" onclick="triggerPrint()">Drucken / PDF</button>
+            </div>
+        </div>
+
+        <div class="print-preview-area" id="print-preview-area">
+            <!-- Dynamically populated page blocks go here -->
+        </div>
+    </div>
+
+    <script>
+        let ecgDataPoints = [];
+        let ecgSampleRate = 130;
+        let startTimeMillis = 0;
+        let originalFileName = "ECG Recording";
+        let ecgMaxX = 0;
+        let currentStartSec = 0;
+        let isFitToScreen = false;
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPrintData();
+        });
+
+        window.addEventListener('resize', () => {
+            if (isFitToScreen) {
+                applyPageScaling();
+            }
+        });
+
+        function showMessage(html) {
+            document.getElementById('print-preview-area').innerHTML = html;
+        }
+
+        function loadPrintData() {
+            // 1) Android-Bridge (App)
+            let jsonStr = "";
+            try {
+                if (window.AndroidBridge && window.AndroidBridge.getPrintData) {
+                    jsonStr = window.AndroidBridge.getPrintData();
+                }
+            } catch (e) { console.error(e); }
+
+            if (jsonStr && jsonStr !== "{}") {
+                try { applyPrintData(JSON.parse(jsonStr)); }
+                catch (err) {
+                    console.error("Error loading print data:", err);
+                    showMessage('<p style="color:red; padding:20px;">Fehler beim Laden der Daten: ' + err.message + '</p>');
+                }
+                return;
+            }
+
+            // 2) PC: Daten kommen vom Viewer (window.opener) per postMessage
+            if (window.opener) {
+                showMessage('<p style="padding:20px;">Warte auf Daten vom Viewer …</p>');
+                window.opener.postMessage({ type: 'ecg-print-ready' }, '*');
+            } else {
+                showMessage('<p style="color:red; padding:20px;">Keine EKG-Daten geladen. Diese Seite über den Viewer (viewer.html) öffnen.</p>');
+            }
+        }
+
+        window.addEventListener('message', (ev) => {
+            if (!window.opener || ev.source !== window.opener) return;
+            const m = ev.data;
+            if (m && m.type === 'ecg-print-data' && m.data) {
+                try { applyPrintData(m.data); }
+                catch (err) {
+                    console.error(err);
+                    showMessage('<p style="color:red; padding:20px;">Fehler beim Laden der Daten: ' + err.message + '</p>');
+                }
+            }
+        });
+
+        function applyPrintData(data) {
+            originalFileName = data.fileName || "ECG Recording";
+            startTimeMillis = data.startTimeMillis || 0;
+            const providedSampleRate = data.sampleRate || (
+                window.AndroidBridge && window.AndroidBridge.getEcgSampleRate
+                    ? window.AndroidBridge.getEcgSampleRate()
+                    : 130
+            );
+            ecgSampleRate = Number.isFinite(providedSampleRate) && providedSampleRate > 0
+                ? providedSampleRate
+                : 130;
+
+            ecgDataPoints = [];
+            ecgMaxX = 0;
+            currentStartSec = 0;
+            let startIndex = 0;
+
+            if (data.ecgY && data.ecgY.length > 0) {
+                // PC-Viewer: nur Y-Werte, Zeit = Index / Samplerate (wie in der App)
+                ecgDataPoints = Array.from(data.ecgY, (y, index) => [(index + 1) / ecgSampleRate, y]);
+                startIndex = Math.min(Math.max(0, data.startIndex | 0), ecgDataPoints.length - 1);
+            } else {
+                // App: [x, y]-Paare
+                const sourcePoints = data.ecgPoints || [];
+                const sourceStartSec = Number(data.startSec) || 0;
+                if (sourcePoints.length > 0) {
+                    startIndex = sourcePoints.findIndex(point => point[0] >= sourceStartSec);
+                    if (startIndex < 0) startIndex = sourcePoints.length - 1;
+                    ecgDataPoints = sourcePoints.map((point, index) => [(index + 1) / ecgSampleRate, point[1]]);
+                }
+            }
+
+            if (ecgDataPoints.length === 0) {
+                showMessage('<p style="color:red; padding:20px;">Keine EKG-Daten geladen.</p>');
+                return;
+            }
+            ecgMaxX = ecgDataPoints[ecgDataPoints.length - 1][0];
+            currentStartSec = Math.floor((startIndex + 1) / ecgSampleRate);
+
+            const totalSecs = Math.ceil(ecgMaxX - currentStartSec);
+            const defaultRows = Math.max(1, Math.min(Math.ceil(totalSecs / 10), 12));
+            document.getElementById('print-rows-count').value = defaultRows;
+            document.getElementById('print-rows-count').max = Math.max(1, Math.ceil(ecgMaxX / 10));
+
+            updateTimeDisplay();
+            generatePrintPages();
+        }
+
+        function updateTimeDisplay() {
+            const displayBox = document.getElementById('start-time-display');
+            if (!displayBox) return;
+
+            if (startTimeMillis > 0) {
+                const timeMs = startTimeMillis + Math.round(currentStartSec * 1000);
+                displayBox.textContent = formatTimeOfDay(timeMs);
+            } else {
+                displayBox.textContent = currentStartSec + "s";
+            }
+        }
+
+        function shiftStartTime(seconds) {
+            currentStartSec = Math.max(0, Math.min(Math.floor(ecgMaxX), currentStartSec + seconds));
+            updateTimeDisplay();
+            generatePrintPages();
+        }
+
+        function toggleFitMode() {
+            isFitToScreen = !isFitToScreen;
+            const btn = document.getElementById('btn-fit-toggle');
+            if (btn) {
+                btn.textContent = isFitToScreen ? "100% Original" : "Anpassen";
+            }
+            applyPageScaling();
+        }
+
+        function applyPageScaling() {
+            const area = document.getElementById('print-preview-area');
+            const wrappers = document.querySelectorAll('.page-scale-wrapper');
+            if (!area || wrappers.length === 0) return;
+
+            if (isFitToScreen) {
+                const availWidth = area.clientWidth - 30; // padding
+                const pagePixelWidth = 1122; // approx 297mm in pixels at 96dpi
+                const scale = Math.min(1.0, availWidth / pagePixelWidth);
+
+                wrappers.forEach(w => {
+                    w.style.transform = `scale(${scale})`;
+                    w.style.height = `${210 * 3.78 * scale}px`;
+                    w.style.width = `${297 * 3.78 * scale}px`;
+                });
+            } else {
+                wrappers.forEach(w => {
+                    w.style.transform = 'none';
+                    w.style.height = 'auto';
+                    w.style.width = 'auto';
+                });
+            }
+        }
+
+        function triggerPrint() {
+            if (window.AndroidBridge && window.AndroidBridge.printPage) {
+                window.AndroidBridge.printPage();
+            } else {
+                window.print();
+            }
+        }
+
+        function closeView() {
+            if (window.AndroidBridge && window.AndroidBridge.close) {
+                window.AndroidBridge.close();
+            } else if (window.opener) {
+                window.close();
+            } else {
+                window.history.back();
+            }
+        }
+
+        function formatDate(tsMs) {
+            if (!tsMs || tsMs <= 0) return "--.--.----";
+            const date = new Date(tsMs);
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            return `${day}.${month}.${year}`;
+        }
+
+        function formatTimeOfDay(tsMs) {
+            if (!tsMs || tsMs <= 0) return "--:--:--";
+            const date = new Date(tsMs);
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            return `${hours}:${minutes}:${seconds}`;
+        }
+
+        function generatePrintPages() {
+            const container = document.getElementById('print-preview-area');
+            container.innerHTML = '';
+
+            if (ecgDataPoints.length === 0) {
+                container.innerHTML = '<p style="padding:20px;">Keine Datenpunkte vorhanden.</p>';
+                return;
+            }
+
+            const startSec = currentStartSec;
+            const rowsToDraw = parseInt(document.getElementById('print-rows-count').value) || 4;
+            const ampScaleValue = parseFloat(document.getElementById('print-amplitude').value) || 1000;
+
+            const secPerRow = 10;
+            const rowsPerPage = 4; // Max rows per A4 page
+
+            const dateStr = formatDate(startTimeMillis);
+
+            let wrapperDiv = null;
+            let pageDiv = null;
+            let rowsContainer = null;
+
+            for (let i = 0; i < rowsToDraw; i++) {
+                const rowStart = startSec + (i * secPerRow);
+                const rowEnd = rowStart + secPerRow;
+
+                // Create a new A4 print page container if needed
+                if (i % rowsPerPage === 0) {
+                    wrapperDiv = document.createElement('div');
+                    wrapperDiv.className = 'page-scale-wrapper';
+
+                    pageDiv = document.createElement('div');
+                    pageDiv.className = 'ecg-print-page';
+
+                    const pageNum = Math.floor(i / rowsPerPage) + 1;
+                    const totalPages = Math.ceil(rowsToDraw / rowsPerPage);
+
+                    pageDiv.innerHTML = `
+                        <div class="print-page-header">
+                            <div>ECG-ANALYZER REPORT</div>
+                            <div class="print-page-meta">
+                                <span>Datei: <b>${originalFileName}</b></span>
+                                <span>Datum: <b>${dateStr}</b></span>
+                                <span>Maßstab: <b>25 mm/s</b></span>
+                                <span>Y-Skalierung: <b>${ampScaleValue} µV / cm</b></span>
+                                <span>Seite: <b>${pageNum} / ${totalPages}</b></span>
+                            </div>
+                        </div>
+                    `;
+
+                    rowsContainer = document.createElement('div');
+                    rowsContainer.className = 'ecg-rows-container';
+                    pageDiv.appendChild(rowsContainer);
+                    wrapperDiv.appendChild(pageDiv);
+                    container.appendChild(wrapperDiv);
+                }
+
+                // Render individual 10-second row
+                const rowDiv = document.createElement('div');
+                rowDiv.className = 'ecg-print-row';
+
+                // 1. ECG Grid Overlay (SVG)
+                const gridSvg = createEcgGridSVG(250, 35);
+                rowDiv.appendChild(gridSvg);
+
+                // 2. Plotting Trace Line
+                const traceSvg = createEcgTraceSVG(rowStart, rowEnd, ampScaleValue);
+                rowDiv.appendChild(traceSvg);
+
+                // 3. Time label for each row: Tageszeit (e.g. 15:03:07 - 15:03:17)
+                const label = document.createElement('div');
+                label.className = 'row-time-label';
+
+                let labelText = "";
+                if (startTimeMillis > 0) {
+                    const rowStartMs = startTimeMillis + Math.round(rowStart * 1000);
+                    const rowEndMs = startTimeMillis + Math.round(rowEnd * 1000);
+                    const todStart = formatTimeOfDay(rowStartMs);
+                    const todEnd = formatTimeOfDay(rowEndMs);
+                    labelText = `${todStart} - ${todEnd}`;
+                } else {
+                    labelText = `${rowStart.toFixed(0)}s - ${rowEnd.toFixed(0)}s`;
+                }
+
+                label.textContent = labelText;
+                rowDiv.appendChild(label);
+
+                rowsContainer.appendChild(rowDiv);
+            }
+
+            applyPageScaling();
+        }
+
+        function createEcgGridSVG(widthMm, heightMm) {
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("class", "ecg-grid-overlay");
+            svg.setAttribute("viewBox", `0 0 ${widthMm} ${heightMm}`);
+            svg.setAttribute("width", "100%");
+            svg.setAttribute("height", "100%");
+            svg.setAttribute("preserveAspectRatio", "none");
+
+            let paths = "";
+
+            // 1mm minor grid lines
+            for (let x = 0; x <= widthMm; x += 1) {
+                if (x % 5 !== 0) {
+                    paths += `M ${x} 0 L ${x} ${heightMm} `;
+                }
+            }
+            for (let y = 0; y <= heightMm; y += 1) {
+                if (y % 5 !== 0) {
+                    paths += `M 0 ${y} L ${widthMm} ${y} `;
+                }
+            }
+            const minorPath = `<path d="${paths}" stroke="#ffcccc" stroke-width="0.15" fill="none" />`;
+
+            // 5mm major grid lines
+            let majorPaths = "";
+            for (let x = 0; x <= widthMm; x += 5) {
+                majorPaths += `M ${x} 0 L ${x} ${heightMm} `;
+            }
+            for (let y = 0; y <= heightMm; y += 5) {
+                majorPaths += `M 0 ${y} L ${widthMm} ${y} `;
+            }
+            const majorPath = `<path d="${majorPaths}" stroke="#ff9999" stroke-width="0.35" fill="none" />`;
+
+            svg.innerHTML = minorPath + majorPath;
+            return svg;
+        }
+
+        function createEcgTraceSVG(startSec, endSec, ampScale) {
+            const widthMm = 250; // 10s * 25mm/s = 250mm
+            const heightMm = 35; // Row height
+
+            const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+            svg.setAttribute("class", "ecg-trace-svg");
+            svg.setAttribute("viewBox", `0 0 ${widthMm} ${heightMm}`);
+            svg.setAttribute("width", "100%");
+            svg.setAttribute("height", "100%");
+            svg.setAttribute("preserveAspectRatio", "none");
+
+            if (ecgDataPoints.length === 0) return svg;
+
+            // Binary search start index
+            let startIndex = 0;
+            let low = 0, high = ecgDataPoints.length - 1;
+            while (low <= high) {
+                let mid = Math.floor((low + high) / 2);
+                if (ecgDataPoints[mid][0] < startSec) {
+                    startIndex = mid;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+
+            let pointsInWindow = [];
+            for (let i = startIndex; i < ecgDataPoints.length; i++) {
+                const pt = ecgDataPoints[i];
+                if (pt[0] > endSec) break;
+                if (pt[0] >= startSec) {
+                    pointsInWindow.push(pt);
+                }
+            }
+
+            if (pointsInWindow.length === 0) return svg;
+
+            const centerY = heightMm / 2; // 17.5mm
+            const uvPerMm = ampScale / 10; // e.g. 1000 / 10 = 100 µV per mm
+
+            let pathD = "";
+            for (let i = 0; i < pointsInWindow.length; i++) {
+                const t = pointsInWindow[i][0];
+                const val = pointsInWindow[i][1];
+
+                const x = (t - startSec) * 25; // 25mm/s
+                const y = centerY - (val / uvPerMm);
+
+                if (i === 0) {
+                    pathD += `M ${x.toFixed(2)} ${y.toFixed(2)}`;
+                } else {
+                    pathD += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+                }
+            }
+
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", pathD);
+            path.setAttribute("stroke", "#112233");
+            path.setAttribute("stroke-width", "0.45");
+            path.setAttribute("fill", "none");
+            svg.appendChild(path);
+
+            return svg;
+        }
+    </script>
+</body>
+</html>

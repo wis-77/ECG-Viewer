@@ -1,0 +1,1323 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECG Viewer</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #f4f7f6; color: #1d2733;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  header {
+    background: linear-gradient(135deg, #112233 0%, #1a3a5f 100%);
+    color: #fff; padding: 8px 16px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,.15);
+  }
+  header h1 { margin: 0; font-size: 1.1rem; font-weight: 600; }
+  #fileinfo { font-size: .8rem; opacity: .85; flex: 1; min-width: 200px; }
+
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center;
+    padding: 6px 16px; background: #fff; border-bottom: 1px solid #dcdfe6;
+  }
+  .toolbar .sep { width: 1px; height: 24px; background: #dcdfe6; margin: 0 4px; }
+  .toolbar label { font-size: .78rem; font-weight: 600; color: #495057; }
+  .toolbar label.chk { display: inline-flex; align-items: center; gap: 4px; font-weight: 500; cursor: pointer; }
+
+  .btn {
+    background: #e9ecef; color: #212529; border: 1px solid #adb5bd;
+    border-radius: 6px; padding: 0 11px; height: 30px;
+    font-size: .82rem; font-weight: 600; cursor: pointer; user-select: none;
+  }
+  .btn:hover { background: #dde1e5; }
+  .btn:active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+  .btn:focus-visible, input:focus-visible { outline: 2px solid #1890ff; outline-offset: 1px; }
+  .btn.primary { background: #1890ff; color: #fff; border-color: #1890ff; }
+  .btn.primary:hover { background: #40a9ff; }
+  .btn.active { background: #1a3a5f; color: #fff; border-color: #1a3a5f; }
+  .btn.success { background: #28a745; color: #fff; border-color: #28a745; margin-left: auto; }
+  .btn.success:hover { background: #218838; }
+  .btn:disabled { opacity: .45; cursor: default; }
+
+  main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 8px 16px 0; gap: 6px; position: relative; }
+  #stack { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; overflow-y: auto; }
+  .chartbox {
+    position: relative; min-height: 80px; flex: 1 1 0;
+    border: 1px solid #aab2bd; border-radius: 6px; background: #fffdfd; overflow: hidden;
+    cursor: crosshair; touch-action: none;
+  }
+  .chartbox.ecg { flex-grow: 3.2; min-height: 190px; }
+  .chartbox.acc { flex-grow: 1.2; }
+  .chartbox.hr  { flex-grow: 1; }
+  .chartbox.rr  { flex-grow: 1.8; min-height: 110px; }
+  .chartbox.hidden { display: none; }
+  .chartbox.pan { cursor: grab; }
+  .chartbox.panning { cursor: grabbing; }
+  .chartbox canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .chartbox canvas.ovl { pointer-events: none; }
+  .tag {
+    position: absolute; left: 64px; top: 4px; font-size: .74rem; font-weight: 600; color: #3d4c5c;
+    pointer-events: none; display: flex; gap: 10px; align-items: center;
+    background: rgba(255,253,253,.8); padding: 1px 6px; border-radius: 4px;
+  }
+  .dot { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 3px; vertical-align: -1px; }
+
+  #ovWrap { height: 54px; flex: none; border: 1px solid #aab2bd; border-radius: 6px; background: #fff; position: relative; overflow: hidden; }
+  #ov { position: absolute; inset: 0; width: 100%; height: 100%; cursor: pointer; touch-action: none; }
+
+  #status {
+    padding: 0 16px; height: 30px; font-size: .8rem; color: #333; flex: none;
+    display: flex; flex-wrap: nowrap; align-items: center; gap: 0 18px; overflow: hidden; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  #status > span { overflow: hidden; text-overflow: ellipsis; }
+  #status .s1 { flex: none; min-width: 300px; }
+  #status .s2 { flex: none; min-width: 340px; }
+  #status .s3 { flex: none; min-width: 110px; }
+  #status .s4 { flex: 1 1 auto; min-width: 0; }
+  #status .dim { color: #9aa4ad; }
+  #status b { color: #1a3a5f; }
+  #status .hint { color: #6b7785; }
+
+  #drop {
+    position: absolute; inset: 8px 16px 0; border: 2px dashed #8aa0b8; border-radius: 10px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
+    background: rgba(244,247,246,.96); color: #1a3a5f; text-align: center; z-index: 5;
+  }
+  #drop.hidden { display: none; }
+  #drop.over { background: rgba(24,144,255,.1); border-color: #1890ff; }
+  #drop p { margin: 0; font-size: 1.05rem; }
+  #drop small { color: #5a6b7d; }
+  #err { color: #c0392b; font-size: .9rem; min-height: 1.2em; max-width: 640px; padding: 0 12px; }
+  #dlstat { color: #1a3a5f; font-size: .9rem; min-height: 1.1em; font-variant-numeric: tabular-nums; }
+  .drv { display: flex; gap: 8px; width: min(560px, 90%); }
+  .drv input { flex: 1; height: 32px; padding: 0 10px; border: 1px solid #adb5bd; border-radius: 6px; font-size: .85rem; }
+  input[type=file] { display: none; }
+
+  /* Poincaré-Fenster (frei verschiebbar, skalierbar, optional eigenes Browserfenster) */
+  .pcwin {
+    position: fixed; z-index: 20; left: 0; top: 0; width: 380px; height: 430px; min-width: 260px; min-height: 280px;
+    background: #000; border: 1px solid #5a6572; border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.4);
+    display: flex; flex-direction: column; overflow: hidden; resize: both; color: #ddd;
+  }
+  .pcwin.hidden { display: none; }
+  .pchead {
+    display: flex; align-items: center; gap: 8px; padding: 5px 8px; background: #1a3a5f; color: #fff;
+    font-size: .8rem; font-weight: 600; cursor: move; user-select: none; touch-action: none;
+  }
+  .pchead .sp { flex: 1; }
+  .pchead label { font-weight: 500; font-size: .72rem; display: flex; align-items: center; gap: 4px; }
+  .pchead input { width: 46px; height: 20px; font-size: .72rem; }
+  .pchead button {
+    background: transparent; border: 1px solid rgba(255,255,255,.45); color: #fff; border-radius: 4px;
+    height: 22px; min-width: 26px; cursor: pointer; font-size: .8rem;
+  }
+  .pchead button:hover { background: rgba(255,255,255,.18); }
+  .pchead button.on { background: #ff9f1a; border-color: #ff9f1a; color: #000; }
+  .pcinfo { font-size: .74rem; color: #ccc; padding: 4px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 22px; font-variant-numeric: tabular-nums; }
+  .pcwin canvas { flex: 1; min-height: 0; width: 100%; display: block; }
+  .pcwin.popped { position: fixed; inset: 0; left: 0; top: 0; width: auto; height: auto; min-width: 0; min-height: 0; border: 0; border-radius: 0; resize: none; box-shadow: none; }
+  .pcwin.popped .pchead { cursor: default; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>ECG Viewer</h1>
+  <div id="fileinfo">Keine Datei geladen</div>
+  <button class="btn" id="btnDrive" title="Datei per Google-Drive-Link laden">Drive-Link …</button>
+  <button class="btn primary" id="btnOpen">Datei öffnen …</button>
+</header>
+
+<div class="toolbar">
+  <label>Fenster:</label>
+  <button class="btn" data-span="10">10 s</button>
+  <button class="btn" data-span="30">30 s</button>
+  <button class="btn" data-span="60">1 min</button>
+  <button class="btn" data-span="300">5 min</button>
+  <button class="btn" data-span="0">Alles</button>
+  <button class="btn" id="btnBack" title="Letzte Zoom-Ansicht (Rücktaste)">Zurück</button>
+  <div class="sep"></div>
+  <label>Maus:</label>
+  <button class="btn active" id="toolSel" title="Ziehen = Bereich markieren und hineinzoomen">Auswahl-Zoom</button>
+  <button class="btn" id="toolPan" title="Ziehen = verschieben">Verschieben</button>
+  <div class="sep"></div>
+  <label>EKG-Y:</label>
+  <button class="btn" id="btnYm" title="Y verkleinern">−</button>
+  <button class="btn" id="btnYp" title="Y vergrößern">+</button>
+  <button class="btn" id="btnYr" title="Y automatisch">Auto</button>
+  <div class="sep"></div>
+  <label>Marker:</label>
+  <button class="btn" id="btnMPrev" title="Vorheriger Marker ( [ )">‹</button>
+  <button class="btn" id="btnMNext" title="Nächster Marker ( ] )">›</button>
+  <button class="btn" id="btnJump" title="Zu einer Uhrzeit springen">Springen …</button>
+  <div class="sep"></div>
+  <button class="btn" id="btnPc" title="Poincaré-Fenster ein-/ausblenden (O)">Poincaré</button>
+  <div class="sep"></div>
+  <label class="chk"><input type="checkbox" id="chkAcc" checked>ACC</label>
+  <label class="chk"><input type="checkbox" id="chkHr" checked>Puls</label>
+  <label class="chk"><input type="checkbox" id="chkRr" checked>RR</label>
+  <button class="btn success" id="btnPrint" disabled title="Ab Cursor (sonst ab linkem Fensterrand) in die Druckansicht (P)">Zur Druckansicht</button>
+</div>
+
+<main>
+  <div id="stack">
+    <div class="chartbox ecg" id="box_ecg"><canvas id="base_ecg"></canvas><canvas class="ovl" id="ovl_ecg"></canvas><div class="tag">EKG [µV]</div></div>
+    <div class="chartbox acc" id="box_acc"><canvas id="base_acc"></canvas><canvas class="ovl" id="ovl_acc"></canvas>
+      <div class="tag">ACC
+        <span><i class="dot" style="background:#d93025"></i>X</span>
+        <span><i class="dot" style="background:#1e9e45"></i>Y</span>
+        <span><i class="dot" style="background:#1a5fd0"></i>Z</span></div></div>
+    <div class="chartbox hr" id="box_hr"><canvas id="base_hr"></canvas><canvas class="ovl" id="ovl_hr"></canvas><div class="tag">Puls [bpm]</div></div>
+    <div class="chartbox rr" id="box_rr"><canvas id="base_rr"></canvas><canvas class="ovl" id="ovl_rr"></canvas><div class="tag" id="tagRr">RR [ms]</div></div>
+  </div>
+  <div id="ovWrap"><canvas id="ov"></canvas></div>
+  <div id="drop">
+    <p><b>.ecg-Datei hierher ziehen</b> oder</p>
+    <button class="btn primary" id="btnOpen2">Datei auswählen</button>
+    <p style="font-size:.9rem">oder aus Google Drive (Freigabe „Jeder mit dem Link“):</p>
+    <div class="drv"><input type="text" id="driveIn" placeholder="Drive-Link oder Datei-ID einfügen" autocomplete="off" spellcheck="false">
+      <button class="btn primary" id="driveGo">Aus Drive laden</button></div>
+    <div id="dlstat"></div>
+    <div id="err"></div>
+    <small>Alles bleibt lokal im Browser, es wird nichts hochgeladen.</small>
+  </div>
+</main>
+
+<div id="status"><span class="hint">Ziehen: Bereich zoomen · Mausrad: Zoom · Shift+Ziehen / Mittelklick: verschieben · Klick: Cursor · Doppelklick: alles</span></div>
+
+<div class="pcwin hidden" id="pcWin">
+  <div class="pchead" id="pcHead">
+    <span>Poincaré</span><span class="sp"></span>
+    <label title="Toleranz für die RMSSD-Berechnung (Sprünge größer als dieser Anteil werden ausgelassen)">ES-Tol. <input type="number" id="pcTol" value="20" min="1" max="100">%</label>
+    <button id="pcLog" title="Logarithmische Achsen (250–2000 ms)">Log</button>
+    <button id="pcPop" title="In eigenem Browserfenster öffnen (z. B. auf zweitem Monitor)">↗</button>
+    <button id="pcClose" title="Schließen">×</button>
+  </div>
+  <div class="pcinfo" id="pcInfo"></div>
+  <canvas id="pcCanvas"></canvas>
+</div>
+
+<input type="file" id="file" accept=".ecg,*/*">
+
+<script>
+'use strict';
+
+// ================================================================ Parser
+// Format wie in FileViewerActivity.parseFile (Streams E0, A0, H0, R0, M0, T0; GPS wird übersprungen)
+const ECG_RATE = 130;
+const MARKER_INFO = {
+    1: { label: 'ES',    color: '#e0302b' },
+    2: { label: 'AF',    color: '#c2188f' },
+    3: { label: 'AVNRT', color: '#1f4fd8' }
+};
+const markerInfo = t => MARKER_INFO[t] || { label: 'M', color: '#7a7a7a' };
+
+function ub(arr, x) {            // erster Index mit arr[i] > x
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] <= x) lo = m + 1; else hi = m; }
+    return lo;
+}
+function lb(arr, x) {            // erster Index mit arr[i] >= x
+    let lo = 0, hi = arr.length;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (arr[m] < x) lo = m + 1; else hi = m; }
+    return lo;
+}
+function median(a) {
+    if (!a.length) return NaN;
+    const s = a.slice().sort((x, y) => x - y);
+    return s[s.length >> 1];
+}
+
+// Zeit eines (gebrochenen) Sample-Index über die T0-Anker: linear zwischen Ankern
+function makeTimeFn(aN, aT, defSlope) {
+    return function (x) {
+        let z = ub(aN, x) - 1;
+        if (z < 0) z = 0;
+        let slope = defSlope;
+        if (z + 1 < aN.length) {
+            const dn = aN[z + 1] - aN[z];
+            if (dn > 0) slope = (aT[z + 1] - aT[z]) / dn;
+        }
+        return aT[z] + (x - aN[z]) * slope;
+    };
+}
+
+function linFit(pts) {            // y = off + slope * x
+    const n = pts.length;
+    let sx = 0, sy = 0, sxx = 0, sxy = 0;
+    for (const [x, y] of pts) { sx += x; sy += y; sxx += x * x; sxy += x * y; }
+    const den = n * sxx - sx * sx;
+    if (n < 2 || Math.abs(den) < 1e-9) return { off: pts.length ? sy / n : 0, slope: 0 };
+    const slope = (n * sxy - sx * sy) / den;
+    return { off: (sy - slope * sx) / n, slope };
+}
+
+// Rekonstruktion der RR-Ausrichtung: lag = Offset + Gang*R + Latenz(>=0). Fit an der unteren Hüllkurve.
+// (Nicht identisch mit RrAligner der App – dort nicht im Upload.)
+function fitRR(rEnd, tEnd) {
+    const n = rEnd.length;
+    const lag = new Float64Array(n);
+    for (let i = 0; i < n; i++) lag[i] = tEnd[i] - rEnd[i];
+    if (n < 8) { let m = Infinity; for (const v of lag) m = Math.min(m, v); return { off: m, slope: 0 }; }
+    const nb = Math.max(2, Math.min(200, Math.floor(n / 10)));
+    const pts = [];
+    for (let b = 0; b < nb; b++) {
+        const s = Math.floor(b * n / nb), e = Math.floor((b + 1) * n / nb);
+        let bi = s;
+        for (let i = s; i < e; i++) if (lag[i] < lag[bi]) bi = i;
+        pts.push([rEnd[bi], lag[bi]]);
+    }
+    let set = pts, f = linFit(set);
+    for (let it = 0; it < 3; it++) {
+        const next = set.filter(p => p[1] - (f.off + f.slope * p[0]) <= 0);
+        if (next.length < Math.max(4, pts.length * 0.25)) break;
+        set = next; f = linFit(set);
+    }
+    return f;
+}
+
+function parseEcg(buf) {
+    const u8 = new Uint8Array(buf);
+    const dv = new DataView(buf);
+    const L = u8.length;
+    if (L < 33 || String.fromCharCode(u8[0], u8[1], u8[2], u8[3]) !== 'ECG0') {
+        throw new Error('Keine gültige ECG0-Datei');
+    }
+    const startMs = Number(dv.getBigInt64(5, false));
+
+    let pos = 32;
+    while (pos < L && u8[pos] !== 0xAA) pos++;
+
+    const ecg = new Int16Array(Math.floor(L / 2));
+    const accA = new Int16Array(Math.floor(L / 6)), accB = new Int16Array(accA.length), accC = new Int16Array(accA.length);
+    let ne = 0, na = 0;
+    const aT = [0], aNE = [0], aNA = [0];
+    let lastAnchor = 0;
+    const hrRaw = [], rrBatches = [], markers = [];
+
+    while (pos + 3 <= L) {
+        if (u8[pos] !== 0xAA) { pos++; continue; }
+        const head = dv.getUint16(pos + 1, false);
+        const tid = (head >> 12) & 0x0F;
+        const len = head & 0x0FFF;
+        const p = pos + 3;
+        if (p + len > L) break;
+        pos = p + len;
+
+        switch (tid) {
+            case 0:   // E0
+                for (let i = 0; i + 1 < len; i += 2) ecg[ne++] = dv.getInt16(p + i, false);
+                break;
+            case 1:   // A0
+                for (let i = 0; i + 5 < len; i += 6) {
+                    accA[na] = dv.getInt16(p + i, false);
+                    accB[na] = dv.getInt16(p + i + 2, false);
+                    accC[na] = dv.getInt16(p + i + 4, false);
+                    na++;
+                }
+                break;
+            case 2:   // H0
+                if (len > 0) hrRaw.push({ ne, na, anchor: lastAnchor, bpm: u8[p] });
+                break;
+            case 3: { // R0
+                const rr = [];
+                for (let i = 0; i + 1 < len; i += 2) {
+                    const v = dv.getUint16(p + i, false);
+                    if (v >= 100 && v <= 5000) rr.push(v);
+                }
+                if (rr.length) rrBatches.push({ ne, na, anchor: lastAnchor, rr });
+                break;
+            }
+            case 4:   // T0
+                if (len >= 4) {
+                    const anchor = dv.getUint32(p, false) / 1000;
+                    if (anchor > lastAnchor && anchor - lastAnchor < 3600) {
+                        aT.push(anchor); aNE.push(ne); aNA.push(na); lastAnchor = anchor;
+                    }
+                }
+                break;
+            case 5:   // M0
+                if (len >= 5) markers.push({ type: u8[p], time: dv.getUint32(p + 1, false) / 1000 });
+                break;
+            default: break;   // L0 (GPS) u. a. werden hier nicht benötigt
+        }
+    }
+    if (ne === 0 && na === 0 && hrRaw.length === 0 && rrBatches.length === 0) throw new Error('Keine Daten in der Datei');
+
+    // ---- Zeitfunktionen
+    const timeE = ne > 0 ? makeTimeFn(aNE, aT, 1 / ECG_RATE) : null;
+    let timeA = null;
+    if (na > 0) {
+        const slopes = [];
+        for (let z = 0; z + 1 < aNA.length; z++) {
+            const dn = aNA[z + 1] - aNA[z];
+            if (dn > 0) slopes.push((aT[z + 1] - aT[z]) / dn);
+        }
+        const defA = slopes.length ? median(slopes) : 1 / 50;
+        const f = makeTimeFn(aNA, aT, defA);
+        // Phase: erstes ACC-Sample einer Sekunde liegt ca. eine halbe Periode nach dem Anker, minus halbe ECG-Periode
+        timeA = i => f(i) + 0.5 * defA - 0.003846;
+    }
+    const posTime = p => timeE ? timeE(p.ne) : timeA ? timeA(p.na) : p.anchor;
+
+    // ---- ECG (Lücken -32768 werden ausgelassen, wie in der App)
+    let ecgD = null, gaps = 0;
+    if (ne > 0) {
+        const T = new Float64Array(ne), Y = new Int16Array(ne);
+        let m = 0;
+        for (let i = 0; i < ne; i++) {
+            const v = ecg[i];
+            if (v === -32768) { gaps++; continue; }
+            T[m] = timeE(i); Y[m] = v; m++;
+        }
+        if (m > 0) ecgD = { T: T.slice(0, m), Y: Y.slice(0, m) };
+    }
+
+    // ---- ACC
+    let accD = null;
+    if (na > 0) {
+        const T = new Float64Array(na);
+        for (let i = 0; i < na; i++) T[i] = timeA(i);
+        accD = { T, X: accA.slice(0, na), Y: accB.slice(0, na), Z: accC.slice(0, na) };
+    }
+
+    // ---- HR
+    const hrD = { T: new Float64Array(hrRaw.length), V: new Float32Array(hrRaw.length) };
+    hrRaw.forEach((h, i) => { hrD.T[i] = posTime(h); hrD.V[i] = h.bpm; });
+
+    // ---- RR: kumulierte RR-Zeit gegen die Dateizeit ausrichten
+    const rrD = { T: new Float64Array(0), V: new Float32Array(0) };
+    let rrFit = null;
+    if (rrBatches.length) {
+        let cum = 0;
+        const cumBeats = [], rrMs = [];
+        const rEnd = new Float64Array(rrBatches.length), tEnd = new Float64Array(rrBatches.length);
+        rrBatches.forEach((b, k) => {
+            for (const r of b.rr) { cum += r / 1000; cumBeats.push(cum); rrMs.push(r); }
+            rEnd[k] = cum; tEnd[k] = posTime(b);
+        });
+        rrFit = fitRR(rEnd, tEnd);
+        rrD.T = new Float64Array(cumBeats.length); rrD.V = new Float32Array(cumBeats.length);
+        cumBeats.forEach((c, i) => { rrD.T[i] = c + rrFit.off + rrFit.slope * c; rrD.V[i] = rrMs[i]; });
+    }
+
+    markers.sort((x, y) => x.time - y.time);
+
+    // Gesamtzeitbereich
+    let t0 = Infinity, t1 = -Infinity;
+    for (const s of [ecgD, accD, hrD, rrD]) {
+        if (s && s.T.length) { t0 = Math.min(t0, s.T[0]); t1 = Math.max(t1, s.T[s.T.length - 1]); }
+    }
+    return { startMs, ecg: ecgD, acc: accD, hr: hrD, rr: rrD, markers, rate: ECG_RATE, gaps,
+             anchors: aT.length - 1, t0, t1, rrFit };
+}
+
+// ================================================================ Zustand
+const $ = id => document.getElementById(id);
+const KEYS = ['ecg', 'acc', 'hr', 'rr'];
+const E = {};
+KEYS.forEach(k => E[k] = { box: $('box_' + k), base: $('base_' + k), ovl: $('ovl_' + k) });
+const ovC = $('ov');
+
+let D = null;
+let view = { a: 0, b: 30 };
+let cur = null, hoverT = null, sel = null;
+let yZoom = 1, panMode = false, ov = null;
+const zoomStack = [];
+const PAD = { l: 58, r: 10 };
+
+const pad2 = x => String(x).padStart(2, '0');
+function tod(t, decimals) {
+    const d = new Date(D.startMs + t * 1000);
+    let s = pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+    if (decimals) s += '.' + String(d.getMilliseconds()).padStart(3, '0').slice(0, decimals);
+    return s;
+}
+const dateStr = ms => { const d = new Date(ms); return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear(); };
+function dur(s) {
+    s = Math.round(s);
+    const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60;
+    return (h ? h + ' h ' : '') + (h || m ? m + ' min ' : '') + x + ' s';
+}
+const has = k => D && (k === 'ecg' ? D.ecg : k === 'acc' ? D.acc : k === 'hr' ? D.hr.T.length : D.rr.T.length);
+const visible = k => has(k) && (k === 'ecg' || $({ acc: 'chkAcc', hr: 'chkHr', rr: 'chkRr' }[k]).checked);
+
+// ================================================================ Laden
+async function loadBuffer(getBuf, name) {
+    $('err').textContent = '';
+    try {
+        $('fileinfo').textContent = 'Lade ' + name + ' …';
+        await new Promise(r => setTimeout(r, 20));
+        const r = parseEcg(await getBuf());
+        r.name = name;
+        D = r; cur = null; hoverT = null; sel = null; yZoom = 1; zoomStack.length = 0;
+        buildOverview(); pcKey = ''; pcRes = null;
+        const total = D.t1 - D.t0;
+        view = { a: D.t0, b: D.t0 + Math.min(30, total) };
+        $('drop').classList.add('hidden');
+        $('btnPrint').disabled = !D.ecg;
+        const cnt = t => D.markers.filter(m => m.type === t).length;
+        $('fileinfo').textContent = name + ' · ' + dateStr(D.startMs) + ' ' + tod(D.t0) + ' · ' + dur(total) +
+            (D.ecg ? ' · ' + D.ecg.T.length.toLocaleString('de-DE') + ' EKG-Samples' : '') +
+            (D.gaps ? ' · ' + D.gaps + ' Lücken' : '') +
+            (D.rr.T.length ? ' · ' + D.rr.T.length.toLocaleString('de-DE') + ' RR' : '') +
+            (D.markers.length ? ' · Marker: ES ' + cnt(1) + ', AF ' + cnt(2) + ', AVNRT ' + cnt(3) +
+                (D.markers.length - cnt(1) - cnt(2) - cnt(3) ? ', andere ' + (D.markers.length - cnt(1) - cnt(2) - cnt(3)) : '') : '');
+        $('tagRr').innerHTML = 'RR [ms]' + ['1', '2', '3'].map(t =>
+            '<span><i class="dot" style="background:' + MARKER_INFO[t].color + '"></i>' + MARKER_INFO[t].label + '</span>').join('');
+        document.title = 'ECG Viewer – ' + name;
+        layoutBoxes();
+        invalidate();
+    } catch (e) {
+        console.error(e);
+        $('fileinfo').textContent = 'Keine Datei geladen';
+        $('err').textContent = 'Fehler: ' + e.message;
+        $('drop').classList.remove('hidden');
+    }
+}
+async function loadFile(file) { await loadBuffer(() => file.arrayBuffer(), file.name); }
+
+function layoutBoxes() {
+    KEYS.forEach(k => E[k].box.classList.toggle('hidden', !visible(k)));
+    ['acc', 'hr', 'rr'].forEach(k => { const c = $({ acc: 'chkAcc', hr: 'chkHr', rr: 'chkRr' }[k]); c.disabled = D ? !has(k) : false; });
+}
+['chkAcc', 'chkHr', 'chkRr'].forEach(id => $(id).onchange = () => { layoutBoxes(); invalidate(); });
+
+$('btnOpen').onclick = $('btnOpen2').onclick = () => { $('file').value = ''; $('file').click(); };
+$('file').onchange = e => { if (e.target.files[0]) loadFile(e.target.files[0]); };
+['dragenter', 'dragover'].forEach(ev => document.addEventListener(ev, e => {
+    e.preventDefault(); $('drop').classList.add('over'); if (D) $('drop').classList.remove('hidden');
+}));
+['dragleave', 'drop'].forEach(ev => document.addEventListener(ev, e => {
+    e.preventDefault(); $('drop').classList.remove('over'); if (D) $('drop').classList.add('hidden');
+}));
+document.addEventListener('drop', e => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) loadFile(f); });
+
+// ================================================================ View-Steuerung
+const MIN_SPAN = 0.2;
+function setView(a, b, push) {
+    if (push) { zoomStack.push({ a: view.a, b: view.b }); if (zoomStack.length > 60) zoomStack.shift(); }
+    const total = D.t1 - D.t0;
+    const span = Math.min(Math.max(b - a, MIN_SPAN), Math.max(total, MIN_SPAN));
+    a = Math.max(D.t0, Math.min(a, D.t1 - span));
+    view = { a, b: a + span };
+    invalidate();
+}
+function zoomAt(t, factor, push) {
+    const span = view.b - view.a, f = (t - view.a) / span, ns = span * factor;
+    setView(t - f * ns, t - f * ns + ns, push);
+}
+function goBack() { const v = zoomStack.pop(); if (v && D) { view = v; invalidate(); } }
+$('btnBack').onclick = goBack;
+document.querySelectorAll('[data-span]').forEach(b => b.onclick = () => {
+    if (!D) return;
+    const total = D.t1 - D.t0, s = +b.dataset.span || total;
+    const c = cur != null && cur >= view.a && cur <= view.b ? cur : (view.a + view.b) / 2;
+    setView(c - s / 2, c + s / 2, true);
+});
+$('btnYp').onclick = () => { yZoom = Math.min(yZoom * 1.4, 50); invalidate(); };
+$('btnYm').onclick = () => { yZoom = Math.max(yZoom / 1.4, 0.1); invalidate(); };
+$('btnYr').onclick = () => { yZoom = 1; invalidate(); };
+function setTool(pan) {
+    panMode = pan;
+    $('toolSel').classList.toggle('active', !pan); $('toolPan').classList.toggle('active', pan);
+    KEYS.forEach(k => E[k].box.classList.toggle('pan', pan));
+}
+$('toolSel').onclick = () => setTool(false);
+$('toolPan').onclick = () => setTool(true);
+
+$('btnJump').onclick = () => {
+    if (!D) return;
+    const s = prompt('Uhrzeit (HH:MM:SS) oder Sekunden seit Aufnahmebeginn:', tod(view.a));
+    if (!s) return;
+    let t;
+    const m = s.trim().match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (m) {
+        const d = new Date(D.startMs); d.setHours(+m[1], +m[2], +(m[3] || 0), 0);
+        let ms = d.getTime(); if (ms < D.startMs - 1000) ms += 86400000;
+        t = (ms - D.startMs) / 1000;
+    } else t = parseFloat(s.replace(',', '.'));
+    if (!isFinite(t)) return;
+    cur = t; const span = view.b - view.a;
+    setView(t - span / 2, t + span / 2, true);
+};
+
+function gotoMarker(dir) {
+    if (!D || !D.markers.length) return;
+    const ref = cur != null ? cur : (view.a + view.b) / 2, eps = 1e-3;
+    let m = null;
+    if (dir > 0) m = D.markers.find(x => x.time > ref + eps);
+    else for (let i = D.markers.length - 1; i >= 0; i--) if (D.markers[i].time < ref - eps) { m = D.markers[i]; break; }
+    if (!m) return;
+    cur = m.time;
+    const span = Math.min(view.b - view.a, 60);
+    setView(m.time - span / 2, m.time + span / 2, false);
+}
+$('btnMPrev').onclick = () => gotoMarker(-1);
+$('btnMNext').onclick = () => gotoMarker(1);
+
+// ---------------------------------------------------------------- Maus
+let drag = null;
+function geoOf(box) { const r = box.getBoundingClientRect(); return { r, pw: r.width - PAD.l - PAD.r }; }
+KEYS.forEach(k => {
+    const box = E[k].box;
+    box.addEventListener('pointerdown', e => {
+        if (!D || e.button === 2) return;
+        box.setPointerCapture(e.pointerId);
+        const g = geoOf(box);
+        const pan = e.button === 1 || (e.shiftKey !== panMode);
+        if (e.button === 1) e.preventDefault();
+        drag = { mode: pan ? 'pan' : 'select', x0: e.clientX, a0: view.a, span: view.b - view.a, moved: false, g, box };
+    });
+    box.addEventListener('pointermove', e => {
+        if (!D) return;
+        const g = drag ? drag.g : geoOf(box);
+        const tAt = x => view.a + (x - g.r.left - PAD.l) / g.pw * (view.b - view.a);
+        if (drag) {
+            const dx = e.clientX - drag.x0;
+            if (!drag.moved && Math.abs(dx) > 5) { drag.moved = true; if (drag.mode === 'pan') box.classList.add('panning'); }
+            if (drag.moved) {
+                if (drag.mode === 'pan') {
+                    const sh = -dx / g.pw * drag.span;
+                    const total = D.t1 - D.t0;
+                    let a = Math.max(D.t0, Math.min(drag.a0 + sh, D.t1 - drag.span));
+                    view = { a, b: a + drag.span }; invalidate();
+                } else {
+                    const clamp = t => Math.max(view.a, Math.min(view.b, t));
+                    sel = { t0: clamp(tAt(drag.x0)), t1: clamp(tAt(e.clientX)) };
+                    hoverT = clamp(tAt(e.clientX));
+                    drawOverlays(); updateStatus();
+                }
+                return;
+            }
+        }
+        const t = tAt(e.clientX);
+        hoverT = (t >= view.a && t <= view.b) ? t : null;
+        drawOverlays(); updateStatus();
+    });
+    box.addEventListener('pointerup', e => {
+        if (!D || !drag) return;
+        const g = drag.g;
+        if (drag.mode === 'select' && drag.moved && sel) {
+            const lo = Math.min(sel.t0, sel.t1), hi = Math.max(sel.t0, sel.t1);
+            sel = null;
+            if (hi - lo > 0.02) setView(lo, hi, true); else drawOverlays();
+        } else if (!drag.moved) {
+            const t = view.a + (e.clientX - g.r.left - PAD.l) / g.pw * (view.b - view.a);
+            if (t >= view.a && t <= view.b) { cur = t; drawOverlays(); updateStatus(); }
+        }
+        box.classList.remove('panning');
+        drag = null; sel = null; drawOverlays();
+    });
+    box.addEventListener('pointercancel', () => { drag = null; sel = null; box.classList.remove('panning'); drawOverlays(); });
+    box.addEventListener('pointerleave', () => { if (!drag) { hoverT = null; drawOverlays(); updateStatus(); } });
+    box.addEventListener('dblclick', () => { if (D) setView(D.t0, D.t1, true); });
+    box.addEventListener('wheel', e => {
+        if (!D) return;
+        e.preventDefault();
+        const g = geoOf(box);
+        const t = view.a + (e.clientX - g.r.left - PAD.l) / g.pw * (view.b - view.a);
+        if (e.shiftKey) { const sh = Math.sign(e.deltaY || e.deltaX) * (view.b - view.a) * 0.15; setView(view.a + sh, view.b + sh, false); return; }
+        zoomAt(Math.max(view.a, Math.min(view.b, t)), Math.pow(1.0018, e.deltaY), false);
+    }, { passive: false });
+});
+
+// Übersicht
+let ovDrag = false;
+function ovSeek(e) {
+    const r = ovC.getBoundingClientRect();
+    const f = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    const span = view.b - view.a, c = D.t0 + f * (D.t1 - D.t0);
+    setView(c - span / 2, c + span / 2, false);
+}
+ovC.addEventListener('pointerdown', e => { if (!D) return; ovC.setPointerCapture(e.pointerId); ovDrag = true; ovSeek(e); });
+ovC.addEventListener('pointermove', e => { if (D && ovDrag) ovSeek(e); });
+ovC.addEventListener('pointerup', () => { ovDrag = false; });
+
+// Tastatur
+document.addEventListener('keydown', e => {
+    if (!D || e.target.tagName === 'INPUT') return;
+    const span = view.b - view.a;
+    if (e.key === 'ArrowRight') setView(view.a + span * .25, view.b + span * .25);
+    else if (e.key === 'ArrowLeft') setView(view.a - span * .25, view.b - span * .25);
+    else if (e.key === '+' || e.key === '=') zoomAt((view.a + view.b) / 2, 0.6, false);
+    else if (e.key === '-') zoomAt((view.a + view.b) / 2, 1 / 0.6, false);
+    else if (e.key === 'Home') setView(D.t0, D.t0 + span);
+    else if (e.key === 'End') setView(D.t1 - span, D.t1);
+    else if (e.key === 'Backspace') goBack();
+    else if (e.key === 'Escape') { sel = null; drag = null; drawOverlays(); }
+    else if (e.key === '[') gotoMarker(-1);
+    else if (e.key === ']') gotoMarker(1);
+    else if (e.key === 'p' || e.key === 'P') sendToPrint();
+    else if (e.key === 'o' || e.key === 'O') pcToggle();
+    else return;
+    e.preventDefault();
+});
+
+// ================================================================ Zeichnen
+function niceStep(raw) {
+    const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / mag;
+    return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+}
+const TSTEPS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400, 21600, 43200];
+
+function setupCanvas(c) {
+    const dpr = (c.ownerDocument.defaultView || window).devicePixelRatio || 1;
+    const W = c.clientWidth, H = c.clientHeight;
+    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+    const ctx = c.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, W, H);
+    return { ctx, W, H };
+}
+function lastVisibleKey() { let l = null; KEYS.forEach(k => { if (visible(k)) l = k; }); return l; }
+function geo(k, W, H) {
+    const top = 8, bottom = k === lastVisibleKey() ? 22 : 4;
+    return { top, bottom, pw: W - PAD.l - PAD.r, ph: H - top - bottom };
+}
+
+let raf = 0;
+function invalidate() { if (!raf) raf = requestAnimationFrame(() => { raf = 0; drawAll(); }); }
+window.addEventListener('resize', invalidate);
+function drawAll() {
+    KEYS.forEach(k => { if (visible(k)) drawBase(k); });
+    drawOv(); updatePc(); drawOverlays(); updateStatus();
+}
+
+function visRange(T) {
+    if (!T.length) return null;
+    return [Math.max(0, lb(T, view.a) - 1), Math.min(T.length - 1, lb(T, view.b) + 1)];
+}
+function minMax(V, i0, i1) {
+    let mn = Infinity, mx = -Infinity;
+    for (let i = i0; i <= i1; i++) { const v = V[i]; if (v < mn) mn = v; if (v > mx) mx = v; }
+    return [mn, mx];
+}
+
+function plotSeries(ctx, T, V, i0, i1, X, Yp, pw, color, lw, gapMax) {
+    const n = i1 - i0 + 1;
+    gapMax = gapMax || Infinity;
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    if (n < pw * 3) {
+        // wenige Samples pro Pixel: exakter Linienzug
+        let started = false;
+        for (let i = i0; i <= i1; i++) {
+            const x = X(T[i]), y = Yp(V[i]);
+            if (!started || T[i] - T[i - 1] > gapMax) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+        }
+    } else {
+        // viele Samples pro Pixel: je Pixelspalte erstes, Min, Max, letztes Sample in Zeitreihenfolge.
+        // So bleibt der Linienzug zusammenhängend (keine Striche zwischen den Spalten).
+        const cols = Math.ceil(pw) + 1;
+        const cnt = new Uint32Array(cols);
+        const first = new Float32Array(cols), last = new Float32Array(cols);
+        const mn = new Float32Array(cols), mx = new Float32Array(cols);
+        const imn = new Int32Array(cols), imx = new Int32Array(cols);
+        const k = pw / (view.b - view.a);
+        for (let i = i0; i <= i1; i++) {
+            const c = ((T[i] - view.a) * k) | 0;
+            if (c < 0 || c >= cols) continue;
+            const v = V[i];
+            if (cnt[c] === 0) { first[c] = v; mn[c] = mx[c] = v; imn[c] = imx[c] = i; }
+            else {
+                if (v < mn[c]) { mn[c] = v; imn[c] = i; }
+                if (v > mx[c]) { mx[c] = v; imx[c] = i; }
+            }
+            last[c] = v; cnt[c]++;
+        }
+        let started = false;
+        for (let c = 0; c < cols; c++) {
+            if (cnt[c] === 0) { started = false; continue; }
+            const x = PAD.l + c + .5;
+            const seq = imn[c] <= imx[c] ? [first[c], mn[c], mx[c], last[c]] : [first[c], mx[c], mn[c], last[c]];
+            for (const v of seq) {
+                const y = Yp(v);
+                if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y);
+            }
+        }
+    }
+    ctx.stroke();
+}
+
+function drawBase(k) {
+    const { ctx, W, H } = setupCanvas(E[k].base);
+    const g = geo(k, W, H), { top, ph, pw } = g;
+    const { a, b } = view, span = b - a;
+    const X = t => PAD.l + (t - a) / span * pw;
+
+    // ---- Y-Bereich
+    let ymin, ymax;
+    const S = k === 'ecg' ? D.ecg : k === 'acc' ? D.acc : k === 'hr' ? D.hr : D.rr;
+    const r0 = visRange(S.T);
+    if (k === 'ecg') {
+        let [mn, mx] = r0 ? minMax(S.Y, r0[0], r0[1]) : [-500, 500];
+        if (!isFinite(mn)) { mn = -500; mx = 500; }
+        const half = Math.max((mx - mn) / 2 * 1.15, 100) / yZoom, mid = (mn + mx) / 2;
+        ymin = mid - half; ymax = mid + half;
+    } else if (k === 'acc') {
+        let mn = Infinity, mx = -Infinity;
+        if (r0) for (const A of [S.X, S.Y, S.Z]) { const [x, y] = minMax(A, r0[0], r0[1]); mn = Math.min(mn, x); mx = Math.max(mx, y); }
+        if (!isFinite(mn)) { mn = -1000; mx = 1000; }
+        const pad = Math.max((mx - mn) * 0.08, 20); ymin = mn - pad; ymax = mx + pad;
+    } else if (k === 'hr') {
+        let [mn, mx] = r0 ? minMax(S.V, r0[0], r0[1]) : [Infinity, -Infinity];
+        if (!isFinite(mn)) { mn = 50; mx = 120; }
+        const pad = Math.max((mx - mn) * 0.12, 5); ymin = mn - pad; ymax = mx + pad;
+    } else { ymin = 0; ymax = 2000; }
+    const Yp = v => top + (ymax - v) / (ymax - ymin) * ph;
+
+    ctx.font = '11px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.lineWidth = 1;
+
+    // ---- Y-Raster
+    const ys = k === 'rr' ? 500 : niceStep((ymax - ymin) / Math.max(2, Math.min(6, ph / 38)));
+    ctx.textAlign = 'right';
+    for (let v = Math.ceil(ymin / ys) * ys; v <= ymax + 1e-9; v += ys) {
+        const y = Math.round(Yp(v)) + .5;
+        ctx.strokeStyle = (k === 'ecg' && Math.abs(v) < 1e-9) ? '#d98f8f' : '#f3dada';
+        ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + pw, y); ctx.stroke();
+        ctx.fillStyle = '#6b7785'; ctx.fillText(String(Math.round(v)), PAD.l - 6, y);
+    }
+
+    // ---- Zeit-Raster (an Uhrzeit ausgerichtet)
+    let step = TSTEPS[TSTEPS.length - 1];
+    for (const s of TSTEPS) if (span / s <= pw / 90) { step = s; break; }
+    const base = D.startMs / 1000, dec = step < 1 ? 1 : 0, lastKey = lastVisibleKey();
+    ctx.textAlign = 'center';
+    for (let ta = Math.ceil((base + a) / step) * step; ta <= base + b + 1e-9; ta += step) {
+        const t = ta - base, x = Math.round(X(t)) + .5;
+        ctx.strokeStyle = '#f3dada';
+        ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke();
+        if (k === lastKey) { ctx.fillStyle = '#6b7785'; ctx.fillText(tod(t, dec), x, H - 9); }
+    }
+    ctx.strokeStyle = '#e6b8b8';
+    ctx.strokeRect(PAD.l + .5, top + .5, pw - 1, ph - 1);
+
+    // ---- Daten
+    ctx.save();
+    ctx.beginPath(); ctx.rect(PAD.l, top, pw, ph); ctx.clip();
+
+    if (r0) {
+        if (k === 'ecg') {
+            plotSeries(ctx, S.T, S.Y, r0[0], r0[1], X, Yp, pw, '#14212e', 1.2);
+            if (pw / Math.max(1, span * D.rate) > 6) {
+                ctx.fillStyle = '#14212e';
+                for (let i = r0[0]; i <= r0[1]; i++) ctx.fillRect(X(S.T[i]) - 1.5, Yp(S.Y[i]) - 1.5, 3, 3);
+            }
+        } else if (k === 'acc') {
+            plotSeries(ctx, S.T, S.X, r0[0], r0[1], X, Yp, pw, '#d93025', 1);
+            plotSeries(ctx, S.T, S.Y, r0[0], r0[1], X, Yp, pw, '#1e9e45', 1);
+            plotSeries(ctx, S.T, S.Z, r0[0], r0[1], X, Yp, pw, '#1a5fd0', 1);
+        } else if (k === 'hr') {
+            plotSeries(ctx, S.T, S.V, r0[0], r0[1], X, Yp, pw, '#c0392b', 1.4, 15);
+        } else {   // RR: Linie durch die Schläge, Punkte bei weniger dichten Daten
+            plotSeries(ctx, S.T, S.V, r0[0], r0[1], X, Yp, pw, '#1a3a5f', 1, 15);
+            if (r0[1] - r0[0] < pw / 3) {
+                ctx.fillStyle = '#1a3a5f';
+                for (let i = r0[0]; i <= r0[1]; i++) { ctx.beginPath(); ctx.arc(X(S.T[i]), Yp(S.V[i]), 2, 0, 6.2832); ctx.fill(); }
+            }
+        }
+    }
+
+    // RR: Marker als Dreiecke bei 1800 ms
+    if (k === 'rr') {
+        const my = Yp(1800);
+        ctx.font = '600 10px -apple-system, "Segoe UI", Roboto, sans-serif';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        for (const m of D.markers) {
+            if (m.time < a - 1 || m.time > b + 1) continue;
+            const mi = markerInfo(m.type), x = X(m.time);
+            ctx.fillStyle = mi.color;
+            ctx.beginPath(); ctx.moveTo(x - 6, my - 12); ctx.lineTo(x + 6, my - 12); ctx.lineTo(x, my); ctx.closePath(); ctx.fill();
+            ctx.fillText(mi.label, x + 8, my - 6);
+        }
+    }
+    ctx.restore();
+}
+
+// ---------------------------------------------------------------- Overlays (Hover, Cursor, Auswahl)
+function drawOverlays() {
+    if (!D) return;
+    KEYS.forEach(k => {
+        if (!visible(k)) return;
+        const { ctx, W, H } = setupCanvas(E[k].ovl);
+        const g = geo(k, W, H);
+        const X = t => PAD.l + (t - view.a) / (view.b - view.a) * g.pw;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(PAD.l, g.top, g.pw, g.ph); ctx.clip();
+        if (k === 'rr' && pcOpen && pcRes && pcRes.truncated) {   // ausgewerteter Teil (mittlere Schläge)
+            const xa = X(pcRes.startTime), xb = X(pcRes.endTime);
+            ctx.fillStyle = 'rgba(255,140,0,.10)'; ctx.fillRect(xa, g.top, xb - xa, g.ph);
+            ctx.strokeStyle = 'rgb(255,140,0)'; ctx.lineWidth = 1.5;
+            for (const x of [xa, xb]) { ctx.beginPath(); ctx.moveTo(Math.round(x) + .5, g.top); ctx.lineTo(Math.round(x) + .5, g.top + g.ph); ctx.stroke(); }
+        }
+        if (sel) {
+            const x0 = X(Math.min(sel.t0, sel.t1)), x1 = X(Math.max(sel.t0, sel.t1));
+            ctx.fillStyle = 'rgba(24,144,255,.16)'; ctx.fillRect(x0, g.top, x1 - x0, g.ph);
+            ctx.strokeStyle = '#1890ff'; ctx.lineWidth = 1;
+            ctx.strokeRect(x0 + .5, g.top + .5, x1 - x0, g.ph - 1);
+        }
+        if (hoverT != null && !sel) {
+            const x = Math.round(X(hoverT)) + .5;
+            ctx.strokeStyle = 'rgba(60,80,100,.45)'; ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+            ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, g.top + g.ph); ctx.stroke();
+            ctx.setLineDash([]);
+        }
+        if (cur != null && cur >= view.a && cur <= view.b) {
+            const x = Math.round(X(cur)) + .5;
+            ctx.strokeStyle = '#1890ff'; ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(x, g.top); ctx.lineTo(x, g.top + g.ph); ctx.stroke();
+        }
+        ctx.restore();
+    });
+}
+
+// ---------------------------------------------------------------- Übersicht
+function overviewSource() {
+    if (D.ecg) return { T: D.ecg.T, V: D.ecg.Y };
+    if (D.rr.T.length) return { T: D.rr.T, V: D.rr.V };
+    if (D.hr.T.length) return { T: D.hr.T, V: D.hr.V };
+    return { T: D.acc.T, V: D.acc.X };
+}
+function buildOverview() {
+    const S = overviewSource(), bins = 2000, t0 = D.t0, total = D.t1 - D.t0 || 1;
+    const mn = new Float32Array(bins).fill(Infinity), mx = new Float32Array(bins).fill(-Infinity);
+    for (let i = 0; i < S.T.length; i++) {
+        let c = ((S.T[i] - t0) / total * bins) | 0; if (c >= bins) c = bins - 1; if (c < 0) c = 0;
+        const v = S.V[i]; if (v < mn[c]) mn[c] = v; if (v > mx[c]) mx[c] = v;
+    }
+    const step = Math.max(1, Math.floor(S.V.length / 20000)), sample = [];
+    for (let i = 0; i < S.V.length; i += step) sample.push(S.V[i]);
+    sample.sort((x, y) => x - y);
+    const lo = sample[Math.floor(sample.length * 0.005)], hi = sample[Math.floor(sample.length * 0.995)];
+    ov = { bins, mn, mx, lo, hi: hi === lo ? lo + 1 : hi };
+}
+function drawOv() {
+    const { ctx, W, H } = setupCanvas(ovC);
+    if (!D || !ov) return;
+    const total = D.t1 - D.t0 || 1;
+    const yp = v => H - 4 - (Math.max(ov.lo, Math.min(ov.hi, v)) - ov.lo) / (ov.hi - ov.lo) * (H - 8);
+    ctx.strokeStyle = '#5c7391'; ctx.lineWidth = 1; ctx.beginPath();
+    for (let x = 0; x < W; x++) {
+        const c0 = Math.floor(x / W * ov.bins), c1 = Math.max(c0 + 1, Math.floor((x + 1) / W * ov.bins));
+        let mn = Infinity, mx = -Infinity;
+        for (let c = c0; c < c1 && c < ov.bins; c++) { if (ov.mn[c] < mn) mn = ov.mn[c]; if (ov.mx[c] > mx) mx = ov.mx[c]; }
+        if (mn === Infinity) continue;
+        ctx.moveTo(x + .5, yp(mn)); ctx.lineTo(x + .5, yp(mx));
+    }
+    ctx.stroke();
+    // Marker in der Übersicht
+    for (const m of D.markers) {
+        const x = (m.time - D.t0) / total * W;
+        ctx.fillStyle = markerInfo(m.type).color; ctx.fillRect(x - 1, 0, 2, 6);
+    }
+    const x0 = (view.a - D.t0) / total * W, x1 = (view.b - D.t0) / total * W;
+    ctx.fillStyle = 'rgba(24,144,255,.18)'; ctx.fillRect(x0, 0, Math.max(2, x1 - x0), H);
+    ctx.strokeStyle = '#1890ff'; ctx.lineWidth = 1.5; ctx.strokeRect(x0 + .5, .5, Math.max(2, x1 - x0) - 1, H - 1);
+    if (cur != null) {
+        const xc = (cur - D.t0) / total * W;
+        ctx.strokeStyle = '#e0453a'; ctx.beginPath(); ctx.moveTo(xc + .5, 0); ctx.lineTo(xc + .5, H); ctx.stroke();
+    }
+}
+
+// ---------------------------------------------------------------- Status
+function nearest(T, V, t, maxDt) {
+    if (!T.length) return null;
+    const i = lb(T, t);
+    let j = i;
+    if (i >= T.length || (i > 0 && t - T[i - 1] < T[i] - t)) j = i - 1;
+    return Math.abs(T[j] - t) <= maxDt ? V[j] : null;
+}
+function valuesAt(t) {
+    const out = [];
+    if (D.ecg) { const v = nearest(D.ecg.T, D.ecg.Y, t, 0.1); if (v != null) out.push(v + ' µV'); }
+    if (D.hr.T.length) { const v = nearest(D.hr.T, D.hr.V, t, 3); if (v != null) out.push(Math.round(v) + ' bpm'); }
+    if (D.rr.T.length) { const v = nearest(D.rr.T, D.rr.V, t, 2); if (v != null) out.push('RR ' + Math.round(v) + ' ms'); }
+    return out.join(' · ');
+}
+function markerNear(t) {
+    const tol = (view.b - view.a) / 150;
+    let best = null;
+    for (const m of D.markers) if (Math.abs(m.time - t) <= tol && (!best || Math.abs(m.time - t) < Math.abs(best.time - t))) best = m;
+    return best;
+}
+function updateStatus() {
+    if (!D) return;
+    const span = view.b - view.a;
+    const s1 = 'Fenster: <b>' + tod(view.a) + ' – ' + tod(view.b) + '</b> (' + (span < 60 ? span.toFixed(1) + ' s' : dur(span)) + ')';
+    let s2 = 'Maus: <span class="dim">–</span>', s3 = '';
+    if (hoverT != null) {
+        s2 = 'Maus: <b>' + tod(hoverT, 2) + '</b> · ' + valuesAt(hoverT);
+        const m = markerNear(hoverT);
+        if (m) s3 = 'Marker: <b style="color:' + markerInfo(m.type).color + '">' + markerInfo(m.type).label + '</b> ' + tod(m.time, 1);
+    }
+    let s4 = '';
+    if (cur != null) s4 = 'Cursor / Druckstart: <b>' + tod(cur, 2) + '</b> (+' + dur(cur - D.t0) + ') · ' + valuesAt(cur);
+    else if (D.ecg) s4 = '<span class="hint">Druckstart: linker Fensterrand (Klick setzt Cursor)</span>';
+    $('status').innerHTML = '<span class="s1">' + s1 + '</span><span class="s2">' + s2 + '</span><span class="s3">' + s3 + '</span><span class="s4">' + s4 + '</span>';
+}
+
+// ================================================================ Poincaré
+// Port von PoincareCalc.kt (RR[i-1] gegen RR[i] im sichtbaren Zeitbereich)
+const PC = { MAX_BEATS: 600, MIN_RR: 250, MAX_RR: 2500, GAP_TOL_MS: 250 };
+
+function pcStats(pts, esTol) {
+    const n = pts.length;
+    if (n < 3) return null;
+    let sum = 0; for (const p of pts) sum += p.y;
+    const mean = sum / n;
+    let ss = 0; for (const p of pts) ss += (p.y - mean) * (p.y - mean);
+    const sdnn = Math.sqrt(ss / (n - 1));
+    let dSum = 0; for (const p of pts) dSum += (p.y - p.x);
+    const dMean = dSum / n;
+    let dSs = 0; for (const p of pts) { const d = (p.y - p.x) - dMean; dSs += d * d; }
+    const sdsd = Math.sqrt(dSs / (n - 1));
+    const sd1 = sdsd / Math.SQRT2;
+    const sd2 = Math.sqrt(Math.max(0, 2 * sdnn * sdnn - 0.5 * sdsd * sdsd));
+    let fSs = 0, fN = 0;
+    for (const p of pts) { const d = p.y - p.x; if (Math.abs(d) < p.x * esTol) { fSs += d * d; fN++; } }
+    const rmssd = fN >= 3 ? Math.sqrt(fSs / fN) : NaN;
+    return { n, meanHr: 60000 / mean, rmssd, sd1, sd2 };
+}
+function pcCompute(times, rrs, t0, t1, maxBeats, esTol) {
+    const a = Math.min(t0, t1), b = Math.max(t0, t1);
+    let lo = lb(times, a), hi = ub(times, b);
+    const total = hi - lo;
+    let truncated = false;
+    if (total > maxBeats) { lo += Math.trunc((total - maxBeats) / 2); hi = lo + maxBeats; truncated = true; }
+    if (hi - lo < 2) return { points: [], stats: null, startTime: a, endTime: b, truncated, requestedBeats: Math.max(0, total) };
+    const pts = [];
+    for (let i = lo + 1; i < hi; i++) {
+        const prev = rrs[i - 1], cur = rrs[i];
+        if (!(prev >= PC.MIN_RR && prev <= PC.MAX_RR && cur >= PC.MIN_RR && cur <= PC.MAX_RR)) continue;
+        if (Math.abs((times[i] - times[i - 1]) * 1000 - cur) > PC.GAP_TOL_MS) continue;
+        pts.push({ x: prev, y: cur, t: times[i] });
+    }
+    return { points: pts, stats: pcStats(pts, esTol), startTime: times[lo], endTime: times[hi - 1], truncated, requestedBeats: total };
+}
+function pcAxisRange(points) {
+    if (!points.length) return [300, 1500];
+    let mn = Infinity, mx = -Infinity;
+    for (const p of points) { mn = Math.min(mn, p.x, p.y); mx = Math.max(mx, p.x, p.y); }
+    const pad = Math.max(30, (mx - mn) * 0.08);
+    let lo = Math.max(200, Math.floor((mn - pad) / 50) * 50);
+    let hi = Math.ceil((mx + pad) / 50) * 50;
+    while (hi - lo < 200) { if (lo - 50 >= 200) lo -= 50; if (hi - lo < 200) hi += 50; }
+    return [lo, hi];
+}
+
+// ---- Fenster
+const pcWin = $('pcWin'), pcCanvas = $('pcCanvas'), pcInfo = $('pcInfo'), pcTol = $('pcTol');
+let pcOpen = false, pcRes = null, pcKey = '', pcPopup = null, pcSaveT = 0;
+const PC_STORE = 'ecgViewer.poincare';
+
+function pcSave() {
+    if (pcPopup) return;
+    try { localStorage.setItem(PC_STORE, JSON.stringify({ l: pcWin.offsetLeft, t: pcWin.offsetTop, w: pcWin.offsetWidth, h: pcWin.offsetHeight })); } catch (e) {}
+}
+function pcPlace(l, t) {
+    const w = pcWin.offsetWidth;
+    l = Math.max(100 - w, Math.min(l, window.innerWidth - 100));     // Kopfzeile bleibt erreichbar
+    t = Math.max(0, Math.min(t, window.innerHeight - 40));
+    pcWin.style.left = l + 'px'; pcWin.style.top = t + 'px';
+}
+function pcRestore() {
+    let s = null;
+    try { s = JSON.parse(localStorage.getItem(PC_STORE) || 'null'); } catch (e) {}
+    const w = Math.min((s && s.w) || 380, window.innerWidth - 20), h = Math.min((s && s.h) || 430, window.innerHeight - 20);
+    pcWin.style.width = w + 'px'; pcWin.style.height = h + 'px';
+    pcPlace(s ? s.l : window.innerWidth - w - 30, s ? s.t : 150);
+}
+function pcToggle(force) {
+    pcOpen = force !== undefined ? force : !pcOpen;
+    $('btnPc').classList.toggle('active', pcOpen);
+    if (pcOpen) {
+        pcWin.classList.remove('hidden');
+        if (!pcPopup) pcRestore();
+        pcKey = '';
+    } else {
+        if (pcPopup) { try { pcPopup.close(); } catch (e) {} pcPopBack(); }
+        pcWin.classList.add('hidden'); pcRes = null;
+    }
+    if (D) invalidate(); else { updatePc(); drawPc(); }
+}
+$('btnPc').onclick = () => pcToggle();
+$('pcClose').onclick = () => pcToggle(false);
+pcTol.onchange = () => { pcKey = ''; if (D) invalidate(); };
+
+// Verschieben an der Kopfzeile
+let pcDrag = null;
+$('pcHead').addEventListener('pointerdown', e => {
+    if (pcPopup || e.target.closest('button,input,label')) return;
+    $('pcHead').setPointerCapture(e.pointerId);
+    pcDrag = { x: e.clientX, y: e.clientY, l: pcWin.offsetLeft, t: pcWin.offsetTop };
+});
+$('pcHead').addEventListener('pointermove', e => { if (pcDrag) pcPlace(pcDrag.l + e.clientX - pcDrag.x, pcDrag.t + e.clientY - pcDrag.y); });
+$('pcHead').addEventListener('pointerup', () => { if (pcDrag) { pcDrag = null; pcSave(); } });
+$('pcHead').addEventListener('dblclick', e => { if (!pcPopup && !e.target.closest('button,input,label')) { try { localStorage.removeItem(PC_STORE); } catch (x) {} pcRestore(); } });
+window.addEventListener('resize', () => { if (pcOpen && !pcPopup) pcPlace(pcWin.offsetLeft, pcWin.offsetTop); });
+if (window.ResizeObserver) {
+    new ResizeObserver(() => {
+        if (!pcOpen || pcPopup) return;
+        drawPc();
+        clearTimeout(pcSaveT); pcSaveT = setTimeout(pcSave, 300);
+    }).observe(pcCanvas);
+}
+
+// Eigenes Browserfenster (z. B. zweiter Monitor); dasselbe Element wird ins Popup verschoben
+function pcPopOut() {
+    if (pcPopup && !pcPopup.closed) { pcPopup.focus(); return; }
+    const w = window.open('', 'ecg-poincare', 'popup=yes,width=480,height=540');
+    if (!w) { alert('Popup wurde blockiert – bitte Popups für diese Seite erlauben.'); return; }
+    // Leeres about:blank startet im Quirks-Modus -> Seite mit DOCTYPE neu schreiben
+    w.document.open();
+    w.document.write('<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>Poincaré</title><style>' +
+        document.querySelector('style').textContent +
+        ' html,body{height:100%;margin:0;background:#000;overflow:hidden}</style></head><body></body></html>');
+    w.document.close();
+    pcWin.style.left = pcWin.style.top = pcWin.style.width = pcWin.style.height = '';   // Inline-Maße des schwebenden Fensters
+    w.document.body.appendChild(w.document.adoptNode(pcWin));
+    pcWin.classList.add('popped');
+    pcPopup = w;
+    w.addEventListener('resize', () => drawPc());
+    w.addEventListener('pagehide', pcPopBack);
+    pcPopup.__poll = setInterval(() => { if (w.closed) pcPopBack(); }, 500);
+    drawPc();
+}
+function pcPopBack() {
+    if (!pcPopup) return;
+    clearInterval(pcPopup.__poll);
+    pcPopup = null;
+    pcWin.classList.remove('popped');
+    try { document.body.appendChild(document.adoptNode(pcWin)); } catch (e) { console.error(e); }
+    if (pcOpen) { pcRestore(); drawPc(); }
+}
+$('pcPop').onclick = pcPopOut;
+window.addEventListener('beforeunload', () => { if (pcPopup) { try { pcPopup.close(); } catch (e) {} } });
+
+// ---- Berechnung + Anzeige
+function updatePc() {
+    if (!pcOpen) return;
+    if (!D) { pcInfo.textContent = 'Keine Datei geladen.'; return; }
+    if (!D.rr.T.length) { pcRes = null; pcInfo.textContent = 'Keine RR-Daten in dieser Datei.'; drawPc(); return; }
+    const tol = Math.min(100, Math.max(1, +pcTol.value || 20)) / 100;
+    const key = view.a + '|' + view.b + '|' + tol;
+    if (key === pcKey) return;
+    pcKey = key;
+    const r = pcCompute(D.rr.T, D.rr.V, view.a, view.b, PC.MAX_BEATS, tol);
+    pcRes = r;
+    const st = r.stats;
+    if (!r.points.length || !st) {
+        pcInfo.textContent = r.requestedBeats < 2 ? 'Zu wenige Schläge im sichtbaren Bereich – herauszoomen.'
+            : 'Zu wenige gültige Paare (' + r.points.length + ') im sichtbaren Bereich.';
+    } else {
+        pcInfo.textContent = st.n + ' Paare · Ø ' + Math.round(st.meanHr) + ' bpm · RMSSD ' +
+            (isNaN(st.rmssd) ? '–' : Math.round(st.rmssd)) + ' ms · SD1 ' + st.sd1.toFixed(1) + ' · SD2 ' + st.sd2.toFixed(1) +
+            (r.truncated ? ' · mittlere ' + PC.MAX_BEATS + ' von ' + r.requestedBeats : '');
+    }
+    pcInfo.title = pcInfo.textContent;
+    drawPc();
+}
+
+// Farbe wie PoincareChartRenderer: HSV, Farbton 0..60°, Helligkeit 0.3..1.0 (alt = dunkelrot, neu = gelb)
+function pcGradient(f) {
+    // HSV(h = f*60°, s = 1, v = 0.3 + 0.7 f): Sektor rot→gelb, also r = v, g = v·f, b = 0
+    const v = 0.3 + f * 0.7;
+    return 'rgb(' + Math.round(v * 255) + ',' + Math.round(v * f * 255) + ',0)';
+}
+const PC_CHUNKS = 40;
+let pcLog = false;
+try { pcLog = localStorage.getItem(PC_STORE + '.log') === '1'; } catch (e) {}
+function pcSetLogBtn() { $('pcLog').classList.toggle('on', pcLog); }
+pcSetLogBtn();
+$('pcLog').onclick = () => {
+    pcLog = !pcLog; pcSetLogBtn();
+    try { localStorage.setItem(PC_STORE + '.log', pcLog ? '1' : '0'); } catch (e) {}
+    drawPc();
+};
+
+function drawPc() {
+    if (!pcOpen) return;
+    const c = pcCanvas;
+    if (!c.clientWidth || !c.clientHeight) return;
+    const { ctx, W, H } = setupCanvas(c);
+    ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H);
+    const pts = pcRes ? pcRes.points : [];
+    const ml = 48, mb = 30, mt = 8, mr = 16;
+    const side = Math.min(W - ml - mr, H - mt - mb);
+    if (side < 60) return;
+    const x0 = ml + (W - ml - mr - side) / 2, y0 = mt + (H - mt - mb - side) / 2;
+
+    const log = pcLog;
+    const [lo, hi] = log ? [250, 2000] : pcAxisRange(pts);
+    const tx = v => log ? Math.log10(v) : v;
+    const a = tx(lo), rng = tx(hi) - a;
+    const X = v => x0 + (tx(v) - a) / rng * side, Y = v => y0 + side - (tx(v) - a) / rng * side;
+
+    ctx.font = '10px -apple-system, "Segoe UI", Roboto, sans-serif';
+    const tick = (v, label, bold) => {
+        ctx.strokeStyle = bold ? '#646464' : (log ? '#323232' : '#464646');
+        ctx.lineWidth = bold ? 1.2 : (log ? 0.6 : 0.8);
+        const px = X(v), py = Y(v);
+        ctx.beginPath(); ctx.moveTo(px, y0); ctx.lineTo(px, y0 + side); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x0, py); ctx.lineTo(x0 + side, py); ctx.stroke();
+        if (label) {
+            ctx.fillStyle = '#fff';
+            ctx.textAlign = 'center'; ctx.textBaseline = 'top'; ctx.fillText(String(v), px, y0 + side + 4);
+            ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(v), x0 - 5, py);
+        }
+    };
+    if (log) {   // Raster alle 100 ms, kräftig und beschriftet bei 500/1000/2000
+        for (let v = 300; v <= 2000; v += 100) tick(v, v === 500 || v === 1000 || v === 2000, v === 500 || v === 1000 || v === 2000);
+    } else {
+        const range = hi - lo, step = range <= 400 ? 50 : range <= 1000 ? 100 : 200;
+        for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) tick(v, true, false);
+    }
+    ctx.lineWidth = 1; ctx.strokeStyle = '#646464';
+    ctx.strokeRect(x0 + .5, y0 + .5, side - 1, side - 1);
+
+    // Winkelhalbierende
+    ctx.strokeStyle = 'rgb(90,90,90)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(X(lo), Y(lo)); ctx.lineTo(X(hi), Y(hi)); ctx.stroke();
+
+    ctx.fillStyle = '#fff'; ctx.font = '10px -apple-system, "Segoe UI", Roboto, sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.fillText('RR[i-1] (ms)', x0 + side / 2, H - 1);
+    ctx.save(); ctx.translate(8, y0 + side / 2); ctx.rotate(-Math.PI / 2); ctx.textBaseline = 'top'; ctx.fillText('RR[i] (ms)', 0, 0); ctx.restore();
+
+    // Punkte: 40 Farbabschnitte wie in der App; der letzte Punkt ist größer
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, y0, side, side); ctx.clip();
+    const n = pts.length;
+    if (n >= 2) {
+        const colors = [];
+        for (let k = 0; k < PC_CHUNKS; k++) colors.push(pcGradient((k + 0.5) / PC_CHUNKS));
+        for (let i = 0; i < n - 1; i++) {
+            const k = Math.min(PC_CHUNKS - 1, Math.floor(i / (n - 1) * PC_CHUNKS));
+            ctx.fillStyle = colors[k];
+            ctx.beginPath(); ctx.arc(X(pts[i].x), Y(pts[i].y), 1.5, 0, 6.2832); ctx.fill();
+        }
+        ctx.fillStyle = pcGradient(1);
+        ctx.beginPath(); ctx.arc(X(pts[n - 1].x), Y(pts[n - 1].y), 2.6, 0, 6.2832); ctx.fill();
+    }
+    ctx.restore();
+}
+
+// ================================================================ Druckansicht
+let printWin = null, pending = null;
+function sendToPrint() {
+    if (!D || !D.ecg) return;
+    const tStart = cur != null ? cur : view.a;
+    const si = Math.min(lb(D.ecg.T, tStart), D.ecg.T.length - 1);
+    pending = {
+        type: 'ecg-print-data',
+        data: { fileName: D.name, startTimeMillis: D.startMs, sampleRate: D.rate, startIndex: si, ecgY: D.ecg.Y }
+    };
+    if (printWin && !printWin.closed) { printWin.postMessage(pending, '*'); printWin.focus(); }
+    else {
+        printWin = window.open('print.html', 'ecg-print');
+        if (!printWin) alert('Popup wurde blockiert – bitte Popups für diese Seite erlauben.');
+    }
+}
+window.addEventListener('message', ev => {
+    if (ev.source === printWin && ev.data && ev.data.type === 'ecg-print-ready' && pending) printWin.postMessage(pending, '*');
+});
+$('btnPrint').onclick = sendToPrint;
+
+
+// ================================================================ Google Drive
+// API-Key: hier eintragen (bei Referrer-Beschränkung unkritisch) oder leer lassen – dann wird er beim ersten Laden
+// einmalig abgefragt und nur im Browser (localStorage) gespeichert.
+const DRIVE_API_KEY = '';
+const KEY_STORE = 'ecgViewer.driveKey';
+
+function driveKey() {
+    if (DRIVE_API_KEY) return DRIVE_API_KEY;
+    let k = '';
+    try { k = localStorage.getItem(KEY_STORE) || ''; } catch (e) {}
+    if (!k) {
+        k = (prompt('Google-Drive-API-Key (wird nur in diesem Browser gespeichert):') || '').trim();
+        if (k) { try { localStorage.setItem(KEY_STORE, k); } catch (e) {} }
+    }
+    return k;
+}
+function driveIdFrom(str) {
+    str = (str || '').trim();
+    if (!str) return null;
+    const m = str.match(/\/d\/([\w-]{10,})/) || str.match(/[?&]id=([\w-]{10,})/);
+    if (m) return m[1];
+    return /^[\w-]{10,}$/.test(str) ? str : null;
+}
+async function driveError(res) {
+    let msg = '';
+    try { const j = await res.json(); msg = (j.error && j.error.message) || ''; } catch (e) {}
+    const hint = res.status === 400 ? 'API-Key ungültig oder Anfrage fehlerhaft.'
+        : res.status === 403 ? 'Zugriff verweigert – Datei nicht per Link freigegeben, Drive API nicht aktiviert oder Referrer-Beschränkung des Keys passt nicht zu dieser Seite.'
+        : res.status === 404 ? 'Datei nicht gefunden oder nicht freigegeben („Jeder mit dem Link“).'
+        : 'Fehler ' + res.status + '.';
+    return new Error(hint + (msg ? ' (' + msg + ')' : ''));
+}
+async function loadDrive(input) {
+    const err = t => { $('err').textContent = t; };
+    const stat = t => { $('dlstat').textContent = t; };
+    err(''); stat('');
+    const id = driveIdFrom(input);
+    if (!id) { err('Kein gültiger Drive-Link bzw. keine Datei-ID.'); $('drop').classList.remove('hidden'); return; }
+    const key = driveKey();
+    if (!key) { err('Kein API-Key angegeben.'); $('drop').classList.remove('hidden'); return; }
+    $('drop').classList.remove('hidden');
+    const base = 'https://www.googleapis.com/drive/v3/files/' + id;
+    try {
+        stat('Hole Dateiinfo …');
+        const mr = await fetch(base + '?fields=name,size&supportsAllDrives=true&key=' + encodeURIComponent(key));
+        if (!mr.ok) throw await driveError(mr);
+        const meta = await mr.json(), size = +meta.size || 0, name = meta.name || id;
+        const res = await fetch(base + '?alt=media&supportsAllDrives=true&key=' + encodeURIComponent(key));
+        if (!res.ok) throw await driveError(res);
+        let buf;
+        if (res.body && res.body.getReader) {
+            const reader = res.body.getReader(), chunks = [];
+            let got = 0;
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                chunks.push(value); got += value.length;
+                stat('Lade ' + name + ' … ' + (size ? Math.round(got / size * 100) + ' %' : (got / 1048576).toFixed(1) + ' MB'));
+            }
+            const all = new Uint8Array(got); let o = 0;
+            for (const c of chunks) { all.set(c, o); o += c.length; }
+            buf = all.buffer;
+        } else buf = await res.arrayBuffer();
+        stat('');
+        await loadBuffer(async () => buf, name);
+        try { const u = new URL(location.href); u.search = '?id=' + id; window.history.replaceState(null, '', u); } catch (e) {}
+    } catch (e) {
+        console.error(e);
+        stat('');
+        err(e instanceof TypeError ? 'Netzwerkfehler (offline, blockiert oder CORS).' : (e.message || String(e)));
+        $('drop').classList.remove('hidden');
+    }
+}
+$('driveGo').onclick = () => loadDrive($('driveIn').value);
+$('driveIn').addEventListener('keydown', e => { if (e.key === 'Enter') loadDrive($('driveIn').value); });
+$('btnDrive').onclick = () => { const v = prompt('Google-Drive-Link oder Datei-ID:'); if (v) loadDrive(v); };
+// Start per Link: index.html?id=<DATEI-ID>
+{
+    const q = new URLSearchParams(location.search);
+    const start = q.get('id') || q.get('drive');
+    if (start) loadDrive(start);
+}
+
+invalidate();
+</script>
+</body>
+</html>
