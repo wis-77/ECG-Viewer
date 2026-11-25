@@ -1,0 +1,1171 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="utf-8">
+    <title>3D Flyover (MapLibre)</title>
+    <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+    <link href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+    <style>
+        /* ---- Konfiguration Layout (Zeitleiste + Höhendiagramm beim Flyover); weitere Parameter: Block KONFIGURATION im Script ---- */
+        :root {
+            --fly-bar-width: min(97vw, 680px);   /* Breite der beiden Felder unten (vorher min(92vw, 420px)) */
+            --fly-bar-bottom: 3px;               /* Abstand zum unteren Rand (vorher 16px); klein = überdeckt die Karten-Attribution unten */
+        }
+        body { margin: 0; padding: 0; font-family: -apple-system, sans-serif; overflow: hidden; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; background: #000; }
+        .controls {
+            position: absolute; top: 10px; left: 10px;
+            background: rgba(255, 255, 255, 0.9); padding: 6px; border-radius: 10px;
+            display: flex; flex-direction: row; gap: 4px; z-index: 10;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.2); backdrop-filter: blur(5px);
+            align-items: center;
+        }
+        .btn-group { display: flex; gap: 4px; border-right: 1px solid #ddd; padding-right: 4px; }
+        .btn-group:last-child { border-right: none; padding-right: 0; }
+        .btn { padding: 5px 10px; border-radius: 6px; border: none; font-size: 11px; font-weight: bold; cursor: pointer; }
+        .btn-blue { background: #2196F3; color: white; }
+        .btn-white { background: #fff; color: #333; border: 1px solid #ccc; }
+        .btn-loc { background: #fff; color: #333; border: 1px solid #ccc; padding: 5px; display: flex; align-items: center; }
+        .hidden { display: none !important; }
+        #token-dialog { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 25px; border-radius: 12px; z-index: 100; box-shadow: 0 10px 40px rgba(0,0,0,0.4); text-align: center; width: 85%; }
+        .maplibregl-popup-content { padding: 10px; border-radius: 8px; font-size: 12px; line-height: 1.4; }
+        .runner-dot { width: 16px; height: 16px; box-sizing: border-box; border-radius: 50%; background: #E040FB; border: 3px solid #fff; box-shadow: 0 0 0 2px rgba(0,0,0,0.45), 0 1px 6px rgba(0,0,0,0.5); pointer-events: none; } .runner-dot-fixed { position: absolute; left: 50%; top: 50%; margin: -8px 0 0 -8px; z-index: 5; }
+ .fly-bar { position: absolute; left: 50%; bottom: var(--fly-bar-bottom); transform: translateX(-50%); z-index: 10; width: var(--fly-bar-width); box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; } .fly-bar-row { background: rgba(255,255,255,0.9); backdrop-filter: blur(5px); border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); padding: 6px 10px; display: flex; align-items: center; gap: 8px; width: 100%; box-sizing: border-box; } .fly-time { font-size: 11px; color: #333; font-variant-numeric: tabular-nums; min-width: 28px; text-align: center; } .fly-bar-row input[type=range] { flex: 1; min-width: 0; accent-color: #2196F3; } .fly-rate-btn { padding: 3px 8px; border-radius: 6px; border: 1px solid #ccc; background: #fff; color: #333; font-size: 12px; font-weight: bold; cursor: pointer; } .fly-rate-label { font-size: 11px; font-weight: bold; color: #333; min-width: 30px; text-align: center; } .fly-elev { width: 100%; height: 44px; display: block; background: rgba(255,255,255,0.9); backdrop-filter: blur(5px); border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.2); box-sizing: border-box; }        .popup-title { font-weight: bold; border-bottom: 1px solid #eee; margin-bottom: 5px; padding-bottom: 2px; }
+    </style>
+</head>
+<body>
+<div id="map"></div>
+<div id="token-dialog" class="hidden">
+    <h3>API Key fehlt</h3>
+    <button class="btn btn-blue" style="width:100%; padding: 10px;" onclick="window.open('https://cloud.maptiler.com/', '_blank')">Key bei MapTiler erstellen</button>
+</div>
+
+<div class="controls">
+    <div class="btn-group" id="groupFlyover">
+        <button id="btnFlyover" class="btn btn-blue" onclick="toggleAnimation()">Flyover</button>
+        <button class="btn btn-loc" onclick="locateUser()" title="Standort">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><circle cx="12" cy="12" r="3"></circle><path d="M12 2v3m0 14v3M2 12h3m14 0h3"></path></svg>
+        </button>
+    </div>
+    <div class="btn-group"><button id="btnMarkers" class="btn btn-white" onclick="toggleMarkers()">Marker</button></div>
+    <div class="btn-group"><button id="btnColorMode" class="btn btn-white" onclick="toggleColorMode()">Puls</button></div>
+    <div class="btn-group"><button id="btnStyle" class="btn btn-white" onclick="cycleStyle()">Satellit</button></div>
+</div>
+
+<div class="fly-bar hidden" id="flyBar">
+    <svg class="fly-elev hidden" id="flyElev" viewBox="0 0 400 44" preserveAspectRatio="none"></svg>
+    <div class="fly-bar-row">
+        <span class="fly-time" id="flyTimeCur">0:00</span>
+        <input type="range" id="flySeek" min="0" max="1000" value="0" aria-label="Zeitleiste" oninput="flySeekInput()" onchange="flySeekDone()">
+        <span class="fly-time" id="flyTimeTotal">0:00</span>
+        <button class="fly-rate-btn" onclick="flyChangeRate(-1)" title="Langsamer">−</button>
+        <span class="fly-rate-label" id="flyRateLabel">1×</span>
+        <button class="fly-rate-btn" onclick="flyChangeRate(1)" title="Schneller">+</button>
+    </div>
+</div>
+
+<script>
+    // =====================================================================================================
+    //  KONFIGURATION - alle Stellschrauben an einer Stelle (zum Ausprobieren von Varianten)
+    // =====================================================================================================
+
+    // ---- Kamera / Gelände ----
+    const TERRAIN_EXAGGERATION = 1.1;   // gilt für map.setTerrain UND die Sichtprüfung: so hoch wird das Gelände gerendert
+    const FLY_ZOOM = 16.2;              // Kamerazoom (wie bisher)
+    const FLY_BASE_PITCH = 60;          // Wunsch-Pitch (wie bisher); 60 ist zugleich MapLibres Maximum
+    const FLY_MAX_ELEV_DEG = 85;        // steilster Blick von oben (bei 90° wäre die Blickrichtung undefiniert)
+    const FLY_MARGIN_DEG = 6;           // Sicherheitswinkel über dem Geländehorizont
+    const FLY_MIN_AGL_M = 30;           // Mindestabstand der Kamera zum Boden unter ihr
+    const FLY_LOOK_AHEAD_S = 3;         // Blickrichtung zeigt so viele Animations-Sekunden voraus ...
+    const FLY_LOOK_AHEAD_MIN_M = 120;   // ... mindestens aber so viele Meter
+    const FLY_HEADING_SMOOTH_S = 3;     // Glättung der Blickrichtung (größer = ruhiger)
+    const FLY_ANTICIPATE_S = 4;         // Kamera hebt sich so viele Sekunden VOR einem Hindernis an
+    const FLY_RELEASE_SMOOTH_S = 2.5;   // Glättung beim Anheben/Absenken (muss <= FLY_ANTICIPATE_S sein)
+    const FLY_DIST_THRESHOLD_KM = 10;    // bis zu dieser Streckenlänge bleibt die Kameradistanz wie bisher
+    const FLY_DIST_M_PER_KM = 60;       // je km darüber wird die Kameradistanz um so viele Meter vergrößert (m/km)
+    const FLY_DIST_MAX_ZOOM_OUT = 4;    // Kamera zoomt für die Vergrößerung höchstens so viele Stufen heraus (Sicherheitsgrenze)
+    // ---- Läufer im Bild ----
+    const FLY_CENTER_SMOOTH_S = 5;      // Glättung der Bildmitte (größer = ruhigeres Bild; der Läufer wandert in Kurven weiter von der Mitte weg)
+    const FLY_MAX_OFFSET_SCREEN = 0.9;  // so weit soll der Läufer höchstens von der Mitte weg (Anteil der halben Bildbreite; 1 = Bildrand). Weiche Grenze, kein Kappen: kurz darüber ist möglich
+    const FLY_PULL_START = 0.7;         // Der Läufer wandert frei im Bild, solange er innerhalb dieses Anteils der Grenze bleibt (die Bildmitte folgt dann nur dem geglätteten Pfad)
+    const FLY_PULL_RATE_MIN = 0.1;      // Darüber zieht die Kamera zum Läufer nach. Geschwindigkeit der Anpassung (1/s) direkt hinter FLY_PULL_START ...
+    const FLY_PULL_RATE_MAX = 1.2;      // ... steigt zum Rand hin immer weiter an, an der Grenze FLY_MAX_OFFSET_SCREEN auf diesen Wert
+    const FLY_PULL_GRADIENT = 2;        // Verlauf dazwischen: 1 = linear, 2 = quadratisch (erst spät schnell), größer = noch später
+    const FLY_PULL_RELEASE = 0.15;      // Asymmetrie: läuft der Läufer wieder nach innen, bleibt nur dieser Anteil der Zugstärke (die Kamera läuft ihm nicht hinterher)
+    const FLY_PULL_ASYM_S = 0.5;        // Übergangszeit (Sekunden) zwischen "Läufer läuft nach außen" und "nach innen"
+    const FLY_PULL_RELAX_S = 8;         // Der Kameraversatz klingt in der ruhigen Zone mit dieser Zeitkonstante (Sekunden) wieder ab
+    const FLY_ADAPT_ZOOM = true;        // Passagen, in denen der Läufer stark um den geglätteten Pfad pendelt (Serpentinen): weiter herauszoomen statt die Kamera hin und her zu ziehen
+    const FLY_ADAPT_FILL = 0.6;         // ... so weit, dass das Pendeln höchstens diesen Anteil der halben Bildbreite einnimmt
+    const FLY_ADAPT_MAX_ZOOMOUT = 1.2;  // ... höchstens so viele Zoomstufen
+    const FLY_ADAPT_WINDOW_S = 2;       // Fenster (Sekunden), in dem die größte Abweichung des Läufers vom Pfad gesucht wird
+    const FLY_ADAPT_SMOOTH_S = 2.5;     // Glättung der Zoomänderung (Sekunden)
+    const FLY_ORBIT_BLEND_S = 1.5;      // Kreisflug mitten in der Strecke: so lange wird die Bildmitte vorher auf den Läufer zu- und nachher wieder abgeblendet (und der Zoom zurückgeführt)
+    // ---- Kreisflug (Orbit) am Gipfel ----
+    const FLY_ORBIT_MS = 16000;         // Kreisflug am Ziel, eine volle Runde (0 = aus)
+    const FLY_ORBIT_ELEV_DEG = 40;      // Blickwinkel über dem Horizont beim Kreisflug
+    const FLY_ORBIT_MAX_ELEV_DEG = 60;  // steiler als das darf der Kreisflug nirgends werden, sonst entfällt er
+    const FLY_ORBIT_DIST_SCALES = [1, 0.7];   // Kreisflug-Distanz: erst wie im Flug, sonst näher heran (0.5 wäre Zoom 17.2: neue Kachelstufe, muss komplett neu geladen werden)
+    // Wo findet der Kreisflug statt? Ein Punkt gilt als Gipfel, wenn ALLE Bedingungen erfüllt sind:
+    const FLY_GIPFEL_TOL = 0.10;        // (1) Höhe liegt höchstens so viel (Anteil der Höhendifferenz) unter dem Streckenmaximum (0.10 = mind. 90 % der relativen Höhe)
+    const FLY_GIPFEL_MIN_CLIMB_M = 100; // (2) bis dorthin wurden mindestens so viele Höhenmeter bewältigt (Höhe am Punkt minus tiefster Punkt davor)
+    const FLY_GIPFEL_MIN_S = 600;       // (3) mitten in der Strecke: dort wurde mindestens so lange am Stück oben verweilt (Sekunden). Am Streckenende reicht (1)+(2): der Stopp der Aufzeichnung ist die Pause
+
+    // ---- Pausen herausfiltern (nur für den Flug; Karte, Popups und Marker nutzen weiter alle Punkte) ----
+    const FLY_PAUSE_FILTER = true;      // false = ungefilterte Punkte verwenden
+    const FLY_PAUSE_RADIUS_M = 5;       // aufeinanderfolgende Punkte innerhalb dieses Radius (um ihren Schwerpunkt) sind "an derselben Stelle"
+    const FLY_PAUSE_MIN_PTS = 4;        // ab so vielen solcher Punkte in Folge ist es eine Pause (einzelne dicht liegende Punkte bleiben, damit der Track schön nachgebildet wird)
+    const FLY_PAUSE_MIN_S = 15;         // ... und sie dauert mindestens so viele Sekunden (damit sehr langsames Gehen nicht ausgedünnt wird; ohne Zeitstempel: dreifache Punktzahl)
+                                        // Von einer Pause bleiben der erste und letzte Punkt erhalten (Anschluss an den Track, Zeitspanne für die Gipfel-Erkennung)
+
+    // ---- Ablauf / Zeitleiste ----
+    const FLY_TRACK_DT_MS = 100;        // Zeitraster der vorberechneten Kamerabahn
+    const FLY_USE_EASETO = false;       // false: map.jumpTo pro Frame (empfohlen). true: map.easeTo({duration: 0}). Nicht empfohlen: easeTo friert mit Terrain intern die Kartenhöhe ein (_elevationFreeze), im Versuch stand die Kamera dann im Berg
+    const FLY_RATES = [0.25, 0.5, 1, 1.5, 2, 4];   // wählbare Wiedergabegeschwindigkeiten
+    const FLY_FLIGHT_MS_MIN = 30000;    // Flugdauer (ohne Kreisflug) bei sehr kurzer Strecke ...
+    const FLY_FLIGHT_MS_MAX = 60000;    // ... und ab FLY_FLIGHT_KM_FULL Kilometern; dazwischen linear. Bezieht sich auf die Streckenlänge, nicht auf die Punktzahl
+    const FLY_FLIGHT_KM_FULL = 10;      // (Punktzahl und -abstand hängen von den GPS-Einstellungen ab: Intervall, Aufzeichnung nach Abweichung)
+    const FLY_START_IDLE_MS = 3000;     // vor dem Start höchstens so lange auf das Laden des Startpunkts warten
+    const FLY_SEEK_THROTTLE_MS = 50;    // Zeitleiste ziehen: Zwischenevents höchstens so oft anwenden (die Endposition beim Loslassen immer)
+    const FLY_BAD_POSE_MAX = 10;        // so viele ungültige (NaN) Kameraposen in Folge, dann wird der Flug gestoppt
+
+    // ---- Lange Aufzeichnungen / Speicher ----
+    const TILE_CACHE_ZOOM_LEVELS = 12;  // MapLibre-Kachel-Cache je Quelle = Kacheln im Bild x dieser Wert (Standard 5 = nur ~30 Kacheln, zu wenig für den Kreisflug; größer = mehr Speicher)
+    const DEM_MAX_TILES = 300;          // Höhenkacheln für die Sichtprüfung, höchstens (~1 MB je Kachel); bei mehr wird gleichmäßig über die Strecke verteilt geladen
+    const ROUTE_MAX_SEGMENTS = 2000;    // Streckenlinie auf der Karte: ab so vielen Segmenten werden Punkte gebündelt (Form bleibt, nur die Farbabstufung wird gröber)
+    const ELEV_CHART_MAX_PTS = 600;     // Höhendiagramm: ab so vielen Punkten Min/Max-Buckets
+    const DEBUG_FLY = true;             // eine Logzeile pro Sekunde (console.error, wie bisher)
+    const EARTH_CIRC = 40075016.686, M_PER_DEG = 111319.49;
+    // =====================================================================================================
+
+    let map, route = [], markers = [], animationRunning = false, currentKey;
+    let startTime = 0, colorMaxSpeed = 10;
+    const styles = ['satellite', 'outdoor-v2', 'topo-v2'];
+    const styleNames = ['Satellit', 'Karte', 'Topo'];
+    let currentStyleIdx = 0, markersVisible = false, targetTime = null;
+    let isMapReady = false, dataReceived = false, colorMode = 'hr';
+    let flyRateIdx = 2, flyClockMs = 0, flyClockRef = 0, flySeeking = false, flyPaused = false;
+let flyWanted = null, flyGuardN = 0, flyGuardDz = 0, flyGuardDp = 0;
+let flyToken = 0, flyRaf = null, flyTrack = null, flyLastLog = 0;
+
+    function initMap(key, showFlyover) {
+        currentKey = key;
+        if (!showFlyover) document.getElementById('groupFlyover').classList.add('hidden');
+
+        map = new maplibregl.Map({
+            container: 'map',
+            style: `https://api.maptiler.com/maps/${styles[currentStyleIdx]}/style.json?key=${key}`,
+            center: [13.4, 52.5], zoom: 13, pitch: 50, maxPitch: 60, maxTileCacheZoomLevels: TILE_CACHE_ZOOM_LEVELS, antialias: true, attributionControl: false
+        });
+
+        map.addControl(new maplibregl.AttributionControl({ compact: true }));
+        map.on('style.load', () => {
+            isMapReady = true;
+            if (map.getFog) map.setFog(null);
+            checkAndRender();
+        });
+        map.on('movestart', (e) => { if (e.originalEvent && animationRunning) stopAnimation(); });
+        map.on('click', 'route', (e) => {
+            const p = e.features[0].properties;
+            const absTime = startTime + (p.time * 1000);
+            const timeStr = new Date(absTime).toLocaleTimeString('de-DE');
+            const tolText = p.acc !== undefined && p.acc !== null ? `<br><b>Tol.:</b> ${Number(p.acc).toFixed(1)} m` : '';
+            const html = `<div class="popup-title">Track Info</div><b>Zeit:</b> ${timeStr}<br><b>Puls:</b> ${p.hr} BPM<br><b>Höhe:</b> ${p.alt} m<br><b>Tempo:</b> ${Number(p.speed).toFixed(1)} km/h${tolText}`;
+            new maplibregl.Popup().setLngLat(e.lngLat).setHTML(html).addTo(map);
+        });
+        initCursorSync();
+    }
+
+    function toggleColorMode() {
+        colorMode = (colorMode === 'hr') ? 'speed' : 'hr';
+        document.getElementById('btnColorMode').innerText = (colorMode === 'hr') ? 'Puls' : 'Tempo';
+        if (map && isMapReady && map.getLayer('route')) updateTrackColor();
+    }
+
+    function updateTrackColor() {
+        try {
+            let colorExpr;
+            if (colorMode === 'hr') {
+                colorExpr = ['interpolate', ['linear'], ['get', 'hr'], 60, '#00ff00', 120, '#ffff00', 180, '#f44336'];
+            } else {
+                const mid = colorMaxSpeed / 2;
+                colorExpr = ['interpolate', ['linear'], ['get', 'speed'], 0, '#00ff00', mid, '#ffff00', colorMaxSpeed, '#f44336'];
+            }
+            map.setPaintProperty('route', 'line-color', colorExpr);
+        } catch(e) {}
+    }
+
+    function checkAndRender() {
+        if (isMapReady && dataReceived) setupTerrainAndRoute();
+    }
+
+    function cycleStyle() {
+        currentStyleIdx = (currentStyleIdx + 1) % styles.length;
+        document.getElementById('btnStyle').innerText = styleNames[currentStyleIdx];
+        isMapReady = false;
+        map.setStyle(`https://api.maptiler.com/maps/${styles[currentStyleIdx]}/style.json?key=${currentKey}`);
+    }
+
+    function setupTerrainAndRoute() {
+        if (!map.getSource('terrain')) {
+            map.addSource('terrain', { type: 'raster-dem', url: `https://api.maptiler.com/tiles/terrain-rgb-v2/tiles.json?key=${currentKey}`, tileSize: 512 });
+        }
+        map.setTerrain({ source: 'terrain', exaggeration: TERRAIN_EXAGGERATION });
+        if (map.setFog) map.setFog(null);
+
+        const layers = map.getStyle().layers;
+        let bId = null;
+        for (const l of layers) { if (l.type === 'symbol' || l.type === 'fill-extrusion' || l.id.includes('building')) { bId = l.id; break; } }
+
+        if (route.length > 0) { drawColoredRoute(route, bId); if (targetTime !== null) drawTargetMarker(bId); }
+        if (markers.length > 0) drawMarkers();
+    }
+
+    function ladeEigeneRouteInKarte(json) {
+        if (animationRunning) stopAnimation();
+        const data = JSON.parse(json);
+        route = data.route || []; markers = data.markers || [];
+        startTime = data.startTime || 0;
+        targetTime = (data.targetTime !== undefined && data.targetTime !== null) ? data.targetTime : null;
+        if (route.length > 0) {
+            const speeds = route.map(p => p.speed || 0).sort((a,b) => a-b);
+            colorMaxSpeed = Math.max(speeds[Math.floor(speeds.length * 0.95)], 6);
+        }
+        dataReceived = true;
+        if (map) {
+            if (targetTime !== null) {
+                const t = findClosestPoint(targetTime);
+                if (t) map.jumpTo({ center: [t.lon, t.lat], zoom: 16.5, pitch: 60 });
+            } else if (route.length > 0) map.jumpTo({ center: [route[0].lon, route[0].lat], zoom: 13, pitch: 45 });
+            checkAndRender();
+        }
+    }
+
+    function findClosestPoint(t) { if (route.length === 0) return null; return route.reduce((p, c) => Math.abs(c.time - t) < Math.abs(p.time - t) ? c : p); }
+
+    function drawColoredRoute(data, bId) {
+        try {
+            ['route', 'route-casing'].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+            if (map.getSource('route')) map.removeSource('route');
+            // Pro Streckenpunkt ein eigenes (2-Punkte-)Feature, damit jedes Segment einzeln nach hr/speed eingefärbt
+            // werden kann. Bei sehr langen Aufzeichnungen (mehrstündig, oft 1 Punkt/Sekunde) wären das zehntausende
+            // Features - das kann den Browser schon beim Laden überfordern/abstürzen lassen. Ab MAXSEG Segmenten
+            // daher in Gruppen bündeln: die Streckenform bleibt exakt erhalten (alle Punkte als Koordinaten),
+            // nur die Farbabstufung wird gröber (Mittelwert von hr/speed je Gruppe).
+            const nSeg = data.length - 1, MAXSEG = ROUTE_MAX_SEGMENTS;
+            let features;
+            if (nSeg <= MAXSEG) {
+                features = data.slice(0, -1).map((p, i) => ({ 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': [[p.lon, p.lat], [data[i + 1].lon, data[i + 1].lat]] }, 'properties': { 'hr': p.hr, 'alt': p.alt, 'time': p.time, 'speed': p.speed, 'acc': p.acc } }));
+            } else {
+                const per = Math.ceil(nSeg / MAXSEG);
+                features = [];
+                for (let s = 0; s < nSeg; s += per) {
+                    const e = Math.min(nSeg, s + per), coords = data.slice(s, e + 1).map(p => [p.lon, p.lat]);
+                    let hrSum = 0, hrN = 0, spSum = 0, spN = 0;
+                    for (let k = s; k < e; k++) { const p = data[k]; if (isFinite(p.hr)) { hrSum += p.hr; hrN++; } if (isFinite(p.speed)) { spSum += p.speed; spN++; } }
+                    features.push({ 'type': 'Feature', 'geometry': { 'type': 'LineString', 'coordinates': coords }, 'properties': { 'hr': hrN ? hrSum / hrN : data[s].hr, 'alt': data[s].alt, 'time': data[s].time, 'speed': spN ? spSum / spN : data[s].speed, 'acc': data[s].acc } });
+                }
+            }
+            map.addSource('route', { 'type': 'geojson', 'data': { 'type': 'FeatureCollection', 'features': features } });
+            const sB = map.getLayer(bId) ? bId : undefined;
+            map.addLayer({ 'id': 'route-casing', 'type': 'line', 'source': 'route', 'layout': { 'line-join': 'round', 'line-cap': 'round' }, 'paint': { 'line-width': 6, 'line-color': '#000', 'line-opacity': 1.0 } }, sB);
+            map.addLayer({ 'id': 'route', 'type': 'line', 'source': 'route', 'layout': { 'line-join': 'round', 'line-cap': 'round' }, 'paint': { 'line-width': 5, 'line-color': '#fff', 'line-opacity': 1.0 } }, sB);
+            updateTrackColor();
+        } catch(e) {}
+    }
+
+    function drawTargetMarker(bId) {
+        ['target-layer', 'target-casing', 'target-halo'].forEach(id => { if (map.getLayer(id)) map.removeLayer(id); });
+        if (map.getSource('target-source')) map.removeSource('target-source');
+        const t = findClosestPoint(targetTime); if (!t) return;
+        map.addSource('target-source', { 'type': 'geojson', 'data': { 'type': 'Feature', 'geometry': { 'type': 'Point', 'coordinates': [t.lon, t.lat] } } });
+        const sB = map.getLayer(bId) ? bId : undefined;
+        map.addLayer({ 'id': 'target-halo', 'type': 'circle', 'source': 'target-source', 'paint': { 'circle-radius': 14, 'circle-color': '#000', 'circle-opacity': 0.4 } }, sB);
+        map.addLayer({ 'id': 'target-casing', 'type': 'circle', 'source': 'target-source', 'paint': { 'circle-radius': 11, 'circle-color': '#fff' } }, sB);
+        map.addLayer({ 'id': 'target-layer', 'type': 'circle', 'source': 'target-source', 'paint': { 'circle-radius': 8, 'circle-color': '#2196F3' } }, sB);
+    }
+
+    function drawMarkers() {
+        ['marker-labels', 'marker-points'].forEach(l => { if (map.getLayer(l)) map.removeLayer(l); });
+        if (map.getSource('marker-source')) map.removeSource('marker-source');
+
+        const features = markers.map(m => ({ 'type': 'Feature', 'geometry': { 'type': 'Point', 'coordinates': [m.lon, m.lat] }, 'properties': { 'label': (m.type === 1 ? "ES" : m.type === 2 ? "AFib" : "TC"), 'color': (m.type === 1 ? "#FF8F00" : m.type === 2 ? "#D32F2F" : "#C2185B") } }));
+        map.addSource('marker-source', { 'type': 'geojson', 'data': { 'type': 'FeatureCollection', 'features': features } });
+
+        map.addLayer({
+            'id': 'marker-points', 'type': 'circle', 'source': 'marker-source',
+            'layout': { 'visibility': markersVisible ? 'visible' : 'none' },
+            'paint': { 'circle-radius': 4, 'circle-color': ['get', 'color'], 'circle-stroke-width': 1.5, 'circle-stroke-color': '#fff' }
+        });
+
+        map.addLayer({
+            'id': 'marker-labels', 'type': 'symbol', 'source': 'marker-source',
+            'layout': {
+                'visibility': markersVisible ? 'visible' : 'none',
+                'text-field': ['get', 'label'],
+                'text-font': ['Open Sans Bold', 'Arial Unicode MS Bold'],
+                'text-size': 12, 'text-offset': [0, -0.6], 'text-anchor': 'bottom',
+                'text-allow-overlap': true,
+                'text-ignore-placement': true
+            },
+            'paint': { 'text-color': ['get', 'color'], 'text-halo-color': '#fff', 'text-halo-width': 2 }
+        });
+    }
+
+    function toggleMarkers() { markersVisible = !markersVisible; document.getElementById('btnMarkers').classList.toggle('btn-blue', markersVisible); document.getElementById('btnMarkers').classList.toggle('btn-white', !markersVisible); ['marker-points', 'marker-labels'].forEach(l => { if (map.getLayer(l)) map.setLayoutProperty(l, 'visibility', markersVisible ? 'visible' : 'none'); }); }
+    function locateUser() { if (animationRunning) stopAnimation(); navigator.geolocation.getCurrentPosition((pos) => { map.flyTo({ center: [pos.coords.longitude, pos.coords.latitude], zoom: 15, duration: 2000 }); }); }
+    // ======================================================================
+    // Flyover mit Geländeausweichung
+    //
+    // Die Kamera bleibt wie bisher hinter dem Läufer (Zoom FLY_ZOOM, Pitch 60). Würde Gelände die Sicht
+    // auf den Läufer verdecken, weicht sie nach oben aus: der Pitch sinkt Richtung 0 (Blick von oben).
+    // Die Bildmitte folgt dem Läufer nur geglättet (der Punkt darf um die Mitte wandern), am Ende kreist
+    // die Kamera einmal um das Ziel, sofern das Gelände es zulässt.
+    //
+    // Warum eigene Höhendaten? MapLibre 4.7.1 hebt die Kamera nur an, wenn sie *im* Gelände steckt.
+    // Ein Berg zwischen Kamera und Läufer wird nicht erkannt, und queryTerrainElevation() liefert Werte
+    // relativ zur Bildschirmmitte und nur für gerade geladene Kacheln. Darum werden die MapTiler-Kacheln
+    // "terrain-rgb-v2" hier selbst geladen (Zoom 12, WebP; Höhe = -10000 + (R*65536 + G*256 + B) * 0.1)
+    // und der Sichtstrahl Läufer -> Kamera gegen das Gelände geprüft (Horizontwinkel-Test).
+    // ======================================================================
+
+    async function blobToImageData(blob) {
+        const bmp = window.createImageBitmap
+            ? await createImageBitmap(blob)
+            : await new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(blob); });
+        const cv = document.createElement('canvas'); cv.width = bmp.width; cv.height = bmp.height;
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+        cx.drawImage(bmp, 0, 0);
+        return cx.getImageData(0, 0, cv.width, cv.height);
+    }
+
+    // Höhenmodell aus den MapTiler-Kacheln (gleiche Daten, aus denen MapLibre das Gelände rendert)
+    const Dem = {
+        zoom: 12, dim: 512, tiles: new Map(), pending: new Map(), tileUrl: null,
+        tileXY(lng, lat) {                       // gebrochene Kachelkoordinaten (Web-Mercator) auf this.zoom
+            const n = Math.pow(2, this.zoom), s = Math.sin(lat * Math.PI / 180);
+            return [(lng + 180) / 360 * n, (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * n];
+        },
+        pixel(ix, iy) {                          // ein Höhenpixel (globale Pixelkoordinaten), NaN wenn Kachel fehlt
+            const d = this.dim, tx = Math.floor(ix / d), ty = Math.floor(iy / d);
+            const t = this.tiles.get(tx * 8192 + ty);
+            return t ? t[(iy - ty * d) * d + (ix - tx * d)] : NaN;
+        },
+        elev(u, v) {                             // Höhe in m (ohne Überhöhung), bilinear wie auf der GPU
+            const d = this.dim, fx = u * d - 0.5, fy = v * d - 0.5;
+            const x0 = Math.floor(fx), y0 = Math.floor(fy), ax = fx - x0, ay = fy - y0;
+            const a = this.pixel(x0, y0), b = this.pixel(x0 + 1, y0), c = this.pixel(x0, y0 + 1), e = this.pixel(x0 + 1, y0 + 1);
+            return (a * (1 - ax) + b * ax) * (1 - ay) + (c * (1 - ax) + e * ax) * ay;
+        },
+        async init(key) {                        // Kachel-URL und Max-Zoom aus dem TileJSON (wie es auch MapLibre lädt)
+            if (this.tileUrl) return;
+            const base = 'https://api.maptiler.com/tiles/terrain-rgb-v2/';
+            let tpl = `${base}{z}/{x}/{y}.webp?key=${key}`;
+            try {
+                const j = await (await fetch(`${base}tiles.json?key=${key}`)).json();
+                if (j.tiles && j.tiles[0]) {
+                    tpl = j.tiles[0];
+                    if (!/[?&]key=/.test(tpl)) tpl += (tpl.includes('?') ? '&' : '?') + 'key=' + key;
+                }
+                if (j.maxzoom) this.zoom = Math.min(12, j.maxzoom);
+            } catch (e) { console.error('FLY: TileJSON nicht ladbar, nutze Standard-URL', e); }
+            this.tileUrl = tpl;
+        },
+        fetchTile(x, y) {
+            const id = x * 8192 + y;
+            if (this.tiles.has(id)) return Promise.resolve();
+            if (!this.pending.has(id)) {
+                const url = this.tileUrl.replace('{z}', this.zoom).replace('{x}', x).replace('{y}', y);
+                this.pending.set(id, (async () => {
+                    try {
+                        const r = await fetch(url);
+                        if (!r.ok) throw new Error('HTTP ' + r.status);
+                        const img = await blobToImageData(await r.blob());
+                        const w = img.width, off = (w % 256 === 2) ? 1 : 0, dim = w - 2 * off, px = img.data;   // evtl. 1px Rand
+                        const out = new Float32Array(dim * dim);
+                        for (let j = 0; j < dim; j++) for (let i = 0; i < dim; i++) {
+                            const k = ((j + off) * w + (i + off)) * 4;
+                            out[j * dim + i] = px[k + 3] === 0 ? NaN : -10000 + (px[k] * 65536 + px[k + 1] * 256 + px[k + 2]) * 0.1;
+                        }
+                        this.dim = dim; this.tiles.set(id, out);
+                    } catch (e) { console.error(`FLY: Höhenkachel ${this.zoom}/${x}/${y} fehlt`, e); }
+                    this.pending.delete(id);
+                })());
+            }
+            return this.pending.get(id);
+        },
+        async ensure(pts, marginM, key) {        // alle Kacheln laden, die Strecke + Umkreis marginM abdecken
+            await this.init(key);
+            const n = Math.pow(2, this.zoom), want = new Set();
+            // Bei dünner Aufzeichnung (große Abstände auf Geraden) lägen zwischen zwei Punkten Kacheln, die kein Punkt abdeckt:
+            // lange Segmente daher in Schritten von höchstens marginM (mind. 300 m, höchstens 2 km) auffüllen.
+            const stepM = Math.max(300, Math.min(marginM, 2000)), samples = [];
+            for (let i = 0; i < pts.length; i++) {
+                if (i > 0) {
+                    const a = pts[i - 1], b = pts[i], d = Math.hypot((b.lon - a.lon) * M_PER_DEG * Math.cos(a.lat * Math.PI / 180), (b.lat - a.lat) * M_PER_DEG), k = Math.floor(d / stepM);
+                    for (let q = 1; q <= k; q++) { const t = q / (k + 1); samples.push({ lon: a.lon + (b.lon - a.lon) * t, lat: a.lat + (b.lat - a.lat) * t }); }
+                }
+                samples.push(pts[i]);
+            }
+            for (const p of samples) {
+                const [u, v] = this.tileXY(p.lon, p.lat);
+                const m = marginM * n / (EARTH_CIRC * Math.cos(p.lat * Math.PI / 180));
+                for (let x = Math.floor(u - m); x <= Math.floor(u + m); x++)
+                    for (let y = Math.floor(v - m); y <= Math.floor(v + m); y++)
+                        if (x >= 0 && y >= 0 && x < n && y < n) want.add(x * 8192 + y);
+            }
+            let todo = [...want].filter(id => !this.tiles.has(id));
+            const CAP = DEM_MAX_TILES;   // ~1 MB/Kachel (512x512 Float32)
+            if (todo.length > CAP) {
+                // Reihenfolge von "want" folgt der Streckenreihenfolge: ohne Umverteilung würden bei einer langen
+                // Strecke fast nur Kacheln vom ANFANG geladen und dem ENDE fehlten die Höhendaten komplett - dort
+                // wüsste die Kamera dann nicht, wie hoch das Gelände ist, und könnte buchstäblich im Berg stecken
+                // (Kreisflug/Läufer/Strecke wären dann nicht mehr zu sehen). Gleichmäßig über die Strecke verteilen.
+                console.error(`FLY: ${todo.length} Höhenkacheln nötig, lade gleichmäßig verteilt nur ${CAP}`);
+                const step = todo.length / CAP, sampled = [];
+                for (let i = 0; i < CAP; i++) sampled.push(todo[Math.floor(i * step)]);
+                todo = sampled;
+            }
+            for (let i = 0; i < todo.length; i += 6)
+                await Promise.all(todo.slice(i, i + 6).map(id => this.fetchTile(Math.floor(id / 8192), id % 8192)));
+        }
+    };
+
+    function groundExag(lng, lat) {              // Gelände-Höhe (m) so, wie sie gerendert wird (inkl. Überhöhung)
+        const [u, v] = Dem.tileXY(lng, lat);
+        return Dem.elev(u, v) * TERRAIN_EXAGGERATION;
+    }
+
+    // Luftlinie Kamera -> Bildmitte in Metern bei gegebenem Zoom (hängt von der Fensterhöhe ab), identisch zu MapLibres Kameramodell
+    function flyViewDistanceM(lat, zoom) {
+        const ctc = (map.transform && map.transform.cameraToCenterDistance) || (0.5 / Math.tan(0.6435011087932844 / 2) * map.getContainer().clientHeight);
+        return ctc * EARTH_CIRC * Math.cos(lat * Math.PI / 180) / (512 * Math.pow(2, zoom === undefined ? FLY_ZOOM : zoom));
+    }
+    // Größter Abstand Läufer <-> Bildmitte (m): der Läufer bleibt im mittleren Teil der Bildbreite (Hochformat ist der Engpass)
+    function flyHalfWidthM(lat, zoom) {            // "halbe Bildbreite" in Metern am Läufer (Maß für die Abstände im Bild); zoom: tatsächlicher Kamerazoom
+        const c = map.getContainer(), aspect = (c.clientWidth || c.clientHeight) / c.clientHeight;
+        return flyViewDistanceM(lat, zoom) * Math.min(1, aspect) / 3;
+    }
+    function flyMaxOffsetM(lat, zoom) {            // Grenze für den Läufer-Abstand zur Bildmitte; zoom: tatsächlicher Flug-Zoom (Standard FLY_ZOOM) - bei langen Strecken zoomt die Kamera heraus, die Grenze wächst mit
+        return FLY_MAX_OFFSET_SCREEN * flyHalfWidthM(lat, zoom);
+    }
+
+    // Kleinster Blickwinkel (Grad über dem Horizont, >= startDeg), bei dem die Kamera den Läufer P sieht.
+    // Die Kamera schaut auf die Bildmitte C (lng/lat, Bodenhöhe gC) mit Blickrichtung bearing, Luftlinie D (m).
+    // Sie sitzt also hinter C und liegt bei steilerem Blick höher und näher an C. P und C dürfen verschieden sein.
+    // Horizontwinkel-Test entlang P -> Kamera: Der Winkel zu jedem Geländepunkt muss um FLY_MARGIN_DEG unter
+    // dem Blickwinkel der Kamera liegen, und die Kamera muss FLY_MIN_AGL_M über dem Boden unter ihr bleiben.
+    function requiredElevationDeg(pLng, pLat, gP, cLng, cLat, gC, bearing, D, startDeg) {
+        const rad = Math.PI / 180, kx = M_PER_DEG * Math.cos(cLat * rad), ky = M_PER_DEG;
+        const sb = Math.sin((bearing + 180) * rad), cb = Math.cos((bearing + 180) * rad);   // Richtung Bildmitte -> Kamera
+        const [u0, v0] = Dem.tileXY(pLng, pLat);
+        const tpm = Math.pow(2, Dem.zoom) / (EARTH_CIRC * Math.cos(pLat * rad));            // Kachel-Einheiten pro Meter
+        const ds = Math.max(8, 1 / (tpm * Dem.dim));                                        // Schrittweite ~ DEM-Auflösung (m)
+        const margin = FLY_MARGIN_DEG * rad, offE = (cLng - pLng) * kx, offN = (cLat - pLat) * ky;
+        const visible = (thDeg) => {
+            const th = thDeg * rad, H = D * Math.cos(th), camAlt = gC + D * Math.sin(th);
+            const dE = offE + H * sb, dN = offN + H * cb, Hd = Math.hypot(dE, dN);          // Läufer -> Kamera am Boden
+            if (Hd < ds) return camAlt > gP + FLY_MIN_AGL_M;
+            const ex = dE / Hd, ey = dN / Hd, K = Math.min(255, Math.ceil(Hd / ds));
+            let hz = -Infinity, zc = gP;
+            for (let k = 1; k <= K; k++) {
+                const s = Math.min(k * ds, Hd);
+                let z = Dem.elev(u0 + s * ex * tpm, v0 - s * ey * tpm) * TERRAIN_EXAGGERATION;
+                if (isNaN(z)) z = gP;                                                       // keine Daten -> kein Hindernis
+                const ang = Math.atan2(z - gP, s);
+                if (ang > hz) hz = ang;
+                zc = z;                                                                     // zuletzt: Boden unter der Kamera
+            }
+            return hz + margin <= Math.atan2(camAlt - gP, Hd) && camAlt >= zc + FLY_MIN_AGL_M;
+        };
+        if (visible(startDeg)) return startDeg;
+        for (let th = startDeg; th < FLY_MAX_ELEV_DEG;) {                                   // grob in 2°, dann 1° genauer
+            th = Math.min(FLY_MAX_ELEV_DEG, th + 2);
+            if (visible(th)) return (th - 1 > startDeg && visible(th - 1)) ? th - 1 : th;
+        }
+        return FLY_MAX_ELEV_DEG;
+    }
+
+    // Streckenlänge (m) einmal vorab berechnen: bestimmt Zielzoom UND die Kachel-Vorlademenge, bevor die Bahn
+    // im Detail gebaut wird. So lädt eine kurze Strecke immer nur ihre tatsächlich nötigen Kacheln, nicht die
+    // maximal denkbare Fläche einer langen Strecke.
+    function routeLengthM(r) {
+        const kx = M_PER_DEG * Math.cos(r[0].lat * Math.PI / 180), ky = M_PER_DEG;
+        let len = 0;
+        for (let i = 1; i < r.length; i++) len += Math.hypot((r[i].lon - r[i - 1].lon) * kx, (r[i].lat - r[i - 1].lat) * ky);
+        return len;
+    }
+    function zoomFlightFor(lengthM, lat) {
+        const extraM = Math.max(0, lengthM / 1000 - FLY_DIST_THRESHOLD_KM) * FLY_DIST_M_PER_KM;
+        return extraM > 0 ? Math.max(FLY_ZOOM - FLY_DIST_MAX_ZOOM_OUT, FLY_ZOOM - Math.log2(1 + extraM / flyViewDistanceM(lat, FLY_ZOOM))) : FLY_ZOOM;
+    }
+
+    function lerpAngle(a, b, t) { const d = ((b - a + 540) % 360) - 180; return (a + d * t + 360) % 360; }
+
+    function smoothAngles(a, w) {                // gleitender Mittelwert über Winkel (Einheitsvektoren)
+        const n = a.length, cs = new Float64Array(n + 1), sn = new Float64Array(n + 1), out = new Float64Array(n);
+        for (let i = 0; i < n; i++) { const r = a[i] * Math.PI / 180; cs[i + 1] = cs[i] + Math.cos(r); sn[i + 1] = sn[i] + Math.sin(r); }
+        for (let i = 0; i < n; i++) {
+            const lo = Math.max(0, i - w), hi = Math.min(n, i + w + 1);
+            out[i] = (Math.atan2(sn[hi] - sn[lo], cs[hi] - cs[lo]) * 180 / Math.PI + 360) % 360;
+        }
+        return out;
+    }
+    function movingAvg(a, w) {
+        const n = a.length, cs = new Float64Array(n + 1), out = new Float64Array(n);
+        for (let i = 0; i < n; i++) cs[i + 1] = cs[i] + a[i];
+        for (let i = 0; i < n; i++) { const lo = Math.max(0, i - w), hi = Math.min(n, i + w + 1); out[i] = (cs[hi] - cs[lo]) / (hi - lo); }
+        return out;
+    }
+    function movingAvgSym(a, w) {                // Fenster schrumpft zu den Enden: Anfang und Ende bleiben exakt erhalten
+        const n = a.length, cs = new Float64Array(n + 1), out = new Float64Array(n);
+        for (let i = 0; i < n; i++) cs[i + 1] = cs[i] + a[i];
+        for (let i = 0; i < n; i++) { const we = Math.min(w, i, n - 1 - i); out[i] = (cs[i + we + 1] - cs[i - we]) / (2 * we + 1); }
+        return out;
+    }
+    function slidingMax(a, w) {
+        const n = a.length, out = new Float64Array(n);
+        for (let i = 0; i < n; i++) { let m = -Infinity; for (let j = Math.max(0, i - w); j <= Math.min(n - 1, i + w); j++) if (a[j] > m) m = a[j]; out[i] = m; }
+        return out;
+    }
+
+    // Streckenmeter (kumuliert, cum[i] = Meter bis Punkt i) -> kontinuierlicher Punktindex. Der Flug läuft gleichmäßig über die
+    // STRECKE, nicht über die Punkt-Indizes: Punktzahl und -abstand hängen von den GPS-Einstellungen ab (alle x Sekunden oder
+    // nach Abweichung), dichte Stellen (langsam, Kurven, Pausen) würden sonst langsam, dünne (Geraden) schnell überflogen.
+    function distToFrac(cum, s) {
+        const n = cum.length;
+        if (s <= 0) return 0;
+        if (s >= cum[n - 1]) return n - 1;
+        let lo = 0, hi = n - 1;
+        while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; }
+        const seg = cum[hi] - cum[lo];
+        return lo + (seg > 0 ? (s - cum[lo]) / seg : 0);
+    }
+
+    // ---- Pausen herausfiltern (nur für den Flug) -------------------------------------------------------------
+    // Der Flug läuft gleichmäßig über die Punkt-INDIZES. Steht jemand 10 Minuten am Gipfel, liegen dort hunderte
+    // Punkte (plus GPS-Rauschen) an derselben Stelle: der Flug "stockt" dann, die Blickrichtung zappelt, und der
+    // Kreisflug beginnt erst nach dieser langen Standzeit. Darum werden Pausen für den Flug auf zwei Punkte
+    // eingedampft. Eine Pause = mindestens FLY_PAUSE_MIN_PTS aufeinanderfolgende Punkte innerhalb
+    // FLY_PAUSE_RADIUS_M um ihren (laufenden) Schwerpunkt, die zusammen mindestens FLY_PAUSE_MIN_S dauern. Erster
+    // und letzter Punkt bleiben (Anschluss an den Track + Zeitspanne für die Gipfel-Erkennung). Einzelne Punkte mit
+    // wenig Abstand bleiben alle erhalten, damit der Track schön nachgebildet wird.
+    function flyFilterRoute(r) {
+        const n = r.length;
+        if (!FLY_PAUSE_FILTER || n < FLY_PAUSE_MIN_PTS) return r;
+        const kx = M_PER_DEG * Math.cos(r[0].lat * Math.PI / 180), ky = M_PER_DEG;
+        const out = [];
+        let i = 0;
+        while (i < n) {
+            let cx = r[i].lon, cy = r[i].lat, cnt = 1, j = i;
+            while (j + 1 < n) {
+                const q = r[j + 1];
+                if (Math.hypot((q.lon - cx) * kx, (q.lat - cy) * ky) > FLY_PAUSE_RADIUS_M) break;
+                cnt++; j++; cx += (q.lon - cx) / cnt; cy += (q.lat - cy) / cnt;
+            }
+            const hasT = isFinite(r[i].time) && isFinite(r[j].time);
+            const isPause = cnt >= FLY_PAUSE_MIN_PTS && (hasT ? r[j].time - r[i].time >= FLY_PAUSE_MIN_S : cnt >= 3 * FLY_PAUSE_MIN_PTS);
+            if (isPause) { out.push(r[i], r[j]); i = j + 1; }
+            else { out.push(r[i]); i++; }
+        }
+        return out;
+    }
+    let flyPts = null;                               // gefilterte Strecke, solange ein Flug läuft
+    const flyRoute = () => flyPts || route;          // Flug-Funktionen arbeiten damit (als lokales "route"), die Karte mit allen Punkten
+
+    // Bestimmt, an welchem Streckenpunkt (Index) der Kreisflug stattfinden soll, oder null, wenn er entfällt.
+    // Ein Punkt (egal ob mitten in der Strecke oder am Streckenende) gilt nur dann als Gipfel, wenn BEIDES gilt:
+    // er liegt weitgehend auf Höhe des Streckenmaximums (höchstens FLY_GIPFEL_TOL der Höhendifferenz darunter)
+    // UND es wurde dort mindestens FLY_GIPFEL_MIN_S am Stück verweilt (z. B. Gipfeltour mit Rückweg: rauf UND
+    // runter durchgehend aufgezeichnet). Keine Pause dort oben - kein Kreisflug, auch wenn die Strecke selbst
+    // ganz oben endet. Ohne Höhendaten (kein .alt an den Punkten) bleibt es beim bisherigen Verhalten: Kreisflug
+    // am Streckenende (dort lässt sich eine Pause ja gar nicht prüfen).
+    function findGipfel(n) {
+        const route = flyRoute();
+        if (n === 0 || route[0].alt === undefined || route[0].alt === null) return n - 1;
+        let maxAlt = -Infinity, minAlt = Infinity;
+        for (let i = 0; i < n; i++) {
+            const a = route[i].alt;
+            if (!isFinite(a)) continue;
+            if (a > maxAlt) maxAlt = a;
+            if (a < minAlt) minAlt = a;
+        }
+        if (!isFinite(maxAlt) || !isFinite(minAlt)) return n - 1;
+        const diff = maxAlt - minAlt;
+        if (diff <= 0) return n - 1;                                // keine echte Höhenvariation -> wie ohne Höhendaten
+        const thresh = maxAlt - FLY_GIPFEL_TOL * diff;
+        // Mindest-Höhengewinn: bis zum Kandidaten müssen FLY_GIPFEL_MIN_CLIMB_M Höhenmeter bewältigt worden sein
+        // (Höhe dort minus tiefster Punkt davor) - sonst ist es kein Gipfel, für den sich ein Kreisflug lohnt.
+        const prefMin = new Float64Array(n);
+        { let m = Infinity; for (let q = 0; q < n; q++) { const a = route[q].alt; if (isFinite(a) && a < m) m = a; prefMin[q] = m; } }
+        const climbOk = (k) => route[k].alt - prefMin[k] >= FLY_GIPFEL_MIN_CLIMB_M;
+        // ZUERST die ganze Strecke (Streckenende eingeschlossen) nach einer dokumentierten Pause absuchen: jeder
+        // zusammenhängende Abschnitt im obersten Höhenband, in dem mindestens FLY_GIPFEL_MIN_S am Stück verweilt
+        // wurde, ist ein Kandidat - davon der mit der größten Höhe gewinnt. Das hat Vorrang vor einem bloß "hoch
+        // genug" liegenden, aber unbelegten Streckenende: sonst würde eine echte, lange Gipfel-Pause ignoriert,
+        // nur weil die Strecke zufällig auch an einem anderen, ebenfalls hohen Punkt endet.
+        let bestIdx = -1, bestAlt = -Infinity, i = 0;
+        while (i < n) {
+            if (route[i].alt >= thresh) {
+                let j = i;
+                while (j + 1 < n && route[j + 1].alt >= thresh) j++;
+                if (route[j].time - route[i].time >= FLY_GIPFEL_MIN_S)
+                    for (let k = i; k <= j; k++) if (route[k].alt > bestAlt && climbOk(k)) { bestAlt = route[k].alt; bestIdx = k; }
+                i = j + 1;
+            } else i++;
+        }
+        if (bestIdx >= 0) return bestIdx;
+        // Keine belegte Pause irgendwo gefunden: das Streckenende zählt trotzdem, wenn es allein die Höhe
+        // erreicht - das Stoppen der Aufzeichnung selbst ist dann die Pause (das Tourziel muss nicht der exakt
+        // höchste Punkt sein, sondern etwas knapp darunter - erkennbar daran, dass dort aufgehört wurde).
+        if (route[n - 1].alt >= thresh && climbOk(n - 1)) return n - 1;
+        return null;                                                // weder Pause noch hohes Streckenende (oder zu wenig Höhengewinn): kein Kreisflug
+    }
+
+    // Kamerabahn vorab berechnen (Zeitraster FLY_TRACK_DT_MS): Blickrichtung, geglättete Bildmitte, Zoom und Blickwinkel.
+    // Teil 1 = Flug entlang der Strecke, Teil 2 (optional) = Kreisflug um das Ziel.
+    // Der nötige Blickwinkel wird als gleitendes Maximum über +-FLY_ANTICIPATE_S aufgeweitet und danach mit einem
+    // kürzeren Fenster geglättet. Das Ergebnis liegt dadurch nie unter dem Bedarf, die Kamera steigt aber
+    // schon vor einem Hindernis sanft an und sinkt danach sanft wieder ab.
+    function buildFlyTrack(flightMs) {
+        const route = flyRoute();                    // gefilterte Flug-Strecke (siehe flyFilterRoute)
+        const n = route.length, rad = Math.PI / 180;
+        const nsF = Math.max(3, Math.ceil(flightMs / FLY_TRACK_DT_MS) + 1), dtMs = flightMs / (nsF - 1);
+        const sec = (s) => Math.max(1, Math.round(s * 1000 / dtMs));
+        const kx = M_PER_DEG * Math.cos(route[0].lat * rad), ky = M_PER_DEG;
+        const cum = new Float64Array(n);
+        for (let i = 1; i < n; i++) cum[i] = cum[i - 1] + Math.hypot((route[i].lon - route[i - 1].lon) * kx, (route[i].lat - route[i - 1].lat) * ky);
+        const total = cum[n - 1];
+        const atDist = (s) => {                  // Position bei Streckenmeter s
+            s = Math.min(Math.max(s, 0), total);
+            let lo = 0, hi = n - 1;
+            while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (cum[mid] <= s) lo = mid; else hi = mid; }
+            const seg = cum[hi] - cum[lo], t = seg > 0 ? (s - cum[lo]) / seg : 0;
+            return [route[lo].lon + (route[hi].lon - route[lo].lon) * t, route[lo].lat + (route[hi].lat - route[lo].lat) * t];
+        };
+        const look = Math.max(FLY_LOOK_AHEAD_MIN_M, total / (flightMs / 1000) * FLY_LOOK_AHEAD_S);
+
+        // Kameradistanz an die Streckenlänge anpassen: Die Flugdauer ist fix, bei langen Strecken legt die Kamera also
+        // proportional mehr Meter pro Sekunde zurück. Die Bildmitte folgt dem Läufer mit einer zeitlichen Verzögerung
+        // (FLY_CENTER_SMOOTH_S); bei hohem Tempo wird daraus ein großer realer Abstand, den der Bildausschnitt sonst
+        // nicht mehr fasst. Die Kamera zoomt deshalb weiter heraus (größere Distanz), proportional zur Streckenlänge
+        // über FLY_DIST_THRESHOLD_KM. Die seitliche Begrenzung (flyMaxOffsetM) wächst dabei automatisch mit, weil sie
+        // von derselben Kameradistanz abhängt. (zoomFlight ist dasselbe, das schon für den Höhendaten-Vorlauf galt.)
+        const zoomFlight = zoomFlightFor(total, route[0].lat);
+        const pLng = new Float64Array(nsF), pLat = new Float64Array(nsF), head = new Float64Array(nsF);
+        const frameFrac = (j) => total >= 1 ? distToFrac(cum, j / (nsF - 1) * total) : j / (nsF - 1) * (n - 1);   // Frame -> Punktindex, gleichmäßig über die Strecke
+        for (let j = 0; j < nsF; j++) {
+            const f = frameFrac(j), i0 = Math.min(Math.floor(f), n - 2), t = f - i0;
+            pLng[j] = route[i0].lon + (route[i0 + 1].lon - route[i0].lon) * t;
+            pLat[j] = route[i0].lat + (route[i0 + 1].lat - route[i0].lat) * t;
+            const s = cum[i0] + (cum[i0 + 1] - cum[i0]) * t;
+            const a = atDist(s + look), b = atDist(s - look * 0.2);
+            const dx = (a[0] - b[0]) * kx, dy = (a[1] - b[1]) * ky;
+            head[j] = Math.hypot(dx, dy) > 3 ? (Math.atan2(dx, dy) / rad + 360) % 360 : NaN;   // bei Stillstand: letzte Richtung behalten
+        }
+        let last = NaN;
+        for (let j = 0; j < nsF; j++) { if (isNaN(head[j])) head[j] = last; else last = head[j]; }
+        last = NaN;
+        for (let j = nsF - 1; j >= 0; j--) { if (isNaN(head[j])) head[j] = last; else last = head[j]; }
+        for (let j = 0; j < nsF; j++) if (isNaN(head[j])) head[j] = 0;
+        const hsF = smoothAngles(head, sec(FLY_HEADING_SMOOTH_S));
+
+        // Bildmitte: der Läuferpfad zweistufig geglättet (Start und Ende exakt). Er schneidet Kurven ab, auf Geraden liegt
+        // er genau auf dem Läufer; je größer FLY_CENTER_SMOOTH_S, desto ruhiger das Bild und desto weiter pendelt der
+        // Läufer in Kurven um die Mitte.
+        const mLng = movingAvgSym(movingAvgSym(pLng, sec(FLY_CENTER_SMOOTH_S)), sec(FLY_CENTER_SMOOTH_S / 2));
+        const mLat = movingAvgSym(movingAvgSym(pLat, sec(FLY_CENTER_SMOOTH_S)), sec(FLY_CENTER_SMOOTH_S / 2));
+
+        // Adaptiver Zoom: Pendelt der Läufer in einer Passage weit um den geglätteten Pfad (Serpentinen), müsste die Kamera
+        // ihm ständig hinterherziehen - das Bild wirkt dann nervös. Stattdessen zoomt die Kamera dort heraus, bis das Pendeln
+        // höchstens FLY_ADAPT_FILL der halben Bildbreite einnimmt (Zoomänderung geglättet, nie weiter hinein als zoomFlight).
+        const zmF = new Float64Array(nsF).fill(zoomFlight);
+        if (FLY_ADAPT_ZOOM) {
+            const dev = new Float64Array(nsF), outL = new Float64Array(nsF);
+            for (let j = 0; j < nsF; j++) dev[j] = Math.hypot((pLng[j] - mLng[j]) * kx, (pLat[j] - mLat[j]) * ky);
+            const devMax = slidingMax(dev, sec(FLY_ADAPT_WINDOW_S));
+            for (let j = 0; j < nsF; j++) outL[j] = Math.min(FLY_ADAPT_MAX_ZOOMOUT, Math.max(0, Math.log2(devMax[j] / FLY_ADAPT_FILL / flyHalfWidthM(pLat[j], zoomFlight))));
+            const wZ = sec(FLY_ADAPT_SMOOTH_S), outS = movingAvgSym(slidingMax(outL, wZ), wZ);
+            for (let j = 0; j < nsF; j++) zmF[j] = zoomFlight - outS[j];
+        }
+
+        // Kameraversatz E  zum geglätteten Pfad (Bildmitte = Pfad + E): Solange der Läufer in der ruhigen Zone bleibt
+        // (FLY_PULL_START der Grenze), ist E = 0. Darüber zieht die Kamera zum Läufer - und zwar nur um den Überschuss,
+        // mit einer Geschwindigkeit, die zum Rand hin immer weiter ansteigt (Gradient FLY_PULL_RATE_MIN -> MAX).
+        // Asymmetrisch: läuft der Läufer wieder nach innen, bleibt nur FLY_PULL_RELEASE der Zugstärke - die Kamera läuft
+        // ihm nicht hinterher, er kehrt von selbst zur Mitte zurück. Kein hartes Kappen: bei sehr schnellem Pendeln darf
+        // er kurz über die Grenze hinaus. Alles weich (stetig), ohne Knicke.
+        const dtS = dtMs / 1000, Ex = new Float64Array(nsF), Ey = new Float64Array(nsF);
+        {
+            let ex = 0, ey = 0, asym = 1, pqx = 0, pqy = 0;
+            for (let j = 0; j < nsF; j++) {
+                const Lm = flyMaxOffsetM(pLat[j], zmF[j]);
+                const qx = (mLng[j] - pLng[j]) * kx, qy = (mLat[j] - pLat[j]) * ky;       // Pfad relativ zum Läufer (m)
+                const dx = qx + ex, dy = qy + ey, d = Math.hypot(dx, dy), m = d / Lm;       // Mitte relativ zum Läufer, Läuferabstand in Grenzen
+                const outward = j === 0 || d >= Math.hypot(pqx + ex, pqy + ey) - 1e-9;      // wächst der Abstand ohne Zutun der Kamera?
+                asym += ((outward ? 1 : FLY_PULL_RELEASE) - asym) * (1 - Math.exp(-dtS / FLY_PULL_ASYM_S));
+                const g = Math.min(1, Math.max(0, (m - FLY_PULL_START) / (1 - FLY_PULL_START)));
+                const rate = (FLY_PULL_RATE_MIN + (FLY_PULL_RATE_MAX - FLY_PULL_RATE_MIN) * Math.pow(g, FLY_PULL_GRADIENT)) * asym;
+                const excess = Math.max(0, d - FLY_PULL_START * Lm);
+                if (d > 1e-9 && excess > 0) { const k = (1 - Math.exp(-rate * dtS)) * excess / d; ex -= dx * k; ey -= dy * k; }
+                const relax = Math.min(1, Math.max(0, 1 - m / (FLY_PULL_START * 0.67)));   // nur in der ruhigen Zone abklingen lassen
+                const f = Math.exp(-dtS * relax / FLY_PULL_RELAX_S); ex *= f; ey *= f;
+                Ex[j] = ex; Ey[j] = ey; pqx = qx; pqy = qy;
+            }
+        }
+        const Re = Math.max(1, sec(FLY_ORBIT_BLEND_S));                                      // an Start und Ende (und beim Kreisflug) fällt E auf 0: Mitte = Läufer
+        const cLngF = new Float64Array(nsF), cLatF = new Float64Array(nsF);
+        for (let j = 0; j < nsF; j++) {
+            const x = Math.min(1, Math.min(j, nsF - 1 - j) / Re), we = x * x * (3 - 2 * x);
+            cLngF[j] = mLng[j] + Ex[j] * we / kx; cLatF[j] = mLat[j] + Ey[j] * we / ky;
+        }
+
+        // Kreisflug: nur wenn das Gelände am Kreisflug-Punkt auf allen 360° einen Blickwinkel <= FLY_ORBIT_MAX_ELEV_DEG
+        // erlaubt. Erst mit der Flugdistanz probieren, dann näher heran; sonst entfällt der Kreisflug. Der Punkt selbst
+        // ist entweder das Streckenende (wenn das weitgehend der höchste Punkt ist) oder ein per findGipfel() gefundener
+        // Gipfel im Streckenverlauf (Gipfeltour mit Rückweg) - siehe findGipfel().
+        const gipfelIdx = FLY_ORBIT_MS > 0 ? findGipfel(n) : null;
+        const orbitP = gipfelIdx !== null ? route[gipfelIdx] : null;
+        const gOrbit = orbitP ? groundExag(orbitP.lon, orbitP.lat) : NaN;
+        let orbitScale = 0;
+        if (orbitP && isFinite(gOrbit)) {
+            for (const sc of FLY_ORBIT_DIST_SCALES) {
+                const D = flyViewDistanceM(orbitP.lat, zoomFlight - Math.log2(sc));
+                let worst = 0;
+                for (let a = 0; a < 360; a += 10)
+                    worst = Math.max(worst, requiredElevationDeg(orbitP.lon, orbitP.lat, gOrbit, orbitP.lon, orbitP.lat, gOrbit, a + 180, D, FLY_ORBIT_ELEV_DEG));
+                if (worst <= FLY_ORBIT_MAX_ELEV_DEG) { orbitScale = sc; break; }
+            }
+        }
+        // jSplit = Frame-Index (im Flug-Raster 0..nsF-1), an dem der Läufer den Kreisflug-Punkt erreicht. Bei einem
+        // Gipfel am Streckenende ist das nsF-1 (bisheriges Verhalten: Kreisflug hängt hinten an). Liegt der Gipfel
+        // mitten in der Strecke, wird der Kreisflug an dieser Stelle eingeschoben und der Flug danach fortgesetzt.
+        const jSplit = orbitScale ? Math.round((total >= 1 ? cum[gipfelIdx] / total : gipfelIdx / (n - 1)) * (nsF - 1)) : nsF - 1;
+        const nsO = orbitScale ? Math.round(FLY_ORBIT_MS / dtMs) + 1 : 1, ns = nsF + nsO - 1;
+        // Der Kreisflug kreist um die Stelle, an der der Läufer im Flug-Raster bei jSplit ankommt (nicht exakt um den
+        // Streckenpunkt gipfelIdx, der nur bis zu einem halben Raster-Schritt daneben liegt): sonst springen Läufer
+        // und Bildmitte beim Übergang Flug <-> Kreisflug um diese Strecke.
+        const orbitF = frameFrac(jSplit), oi = Math.min(Math.floor(orbitF), n - 2), ot = orbitF - oi;
+        const orbitLng = orbitScale ? route[oi].lon + (route[oi + 1].lon - route[oi].lon) * ot : NaN;
+        const orbitLat = orbitScale ? route[oi].lat + (route[oi + 1].lat - route[oi].lat) * ot : NaN;
+        // Übergang Bildmitte/Zoom bei einem Kreisflug: Bildmitte (Versatz zum Läufer) wird davor auf den Läufer
+        // zu- und danach wieder abgeblendet; mitten in der Strecke wird auch der Zoom am Ende des Kreisflugs zurückgeführt
+        const Rb = orbitScale ? Math.max(1, sec(FLY_ORBIT_BLEND_S)) : 0, hasTail = orbitScale > 0 && jSplit < nsF - 1;
+        const blendW = (dist) => { if (!Rb) return 1; const x = Math.min(1, dist / Rb); return x * x * (3 - 2 * x); };
+        const hs = new Float64Array(ns), cLng = new Float64Array(ns), cLat = new Float64Array(ns), rLng = new Float64Array(ns), rLat = new Float64Array(ns), zm = new Float64Array(ns).fill(zoomFlight);
+        for (let j = 0; j <= jSplit; j++) {
+            const w = blendW(jSplit - j);
+            zm[j] = zmF[j];
+            hs[j] = hsF[j]; cLng[j] = pLng[j] + (cLngF[j] - pLng[j]) * w; cLat[j] = pLat[j] + (cLatF[j] - pLat[j]) * w; rLng[j] = pLng[j]; rLat[j] = pLat[j];
+        }
+        for (let i = 1; i < nsO; i++) {
+            const j = jSplit + i, tau = i / (nsO - 1), ease = tau * tau * tau * (tau * (6 * tau - 15) + 10);   // sanfter Start/Stopp
+            const b = Math.min(1, tau / 0.25, hasTail ? (1 - tau) / 0.25 : 1), sc = 1 + (orbitScale - 1) * b * b * (3 - 2 * b);   // Distanz gleitet ein (und bei Fortsetzung wieder aus)
+            hs[j] = (hsF[jSplit] + 360 * ease) % 360;
+            zm[j] = zmF[jSplit] - Math.log2(sc);
+            cLng[j] = rLng[j] = orbitLng; cLat[j] = rLat[j] = orbitLat;
+        }
+        for (let j = jSplit + 1; j < nsF; j++) {                    // Rest des Flugs nach einem eingeschobenen Kreisflug
+            const k = j + nsO - 1;
+            const w = blendW(j - jSplit);
+            zm[k] = zmF[j];
+            hs[k] = hsF[j]; cLng[k] = pLng[j] + (cLngF[j] - pLng[j]) * w; cLat[k] = pLat[j] + (cLatF[j] - pLat[j]) * w; rLng[k] = pLng[j]; rLat[k] = pLat[j];
+        }
+
+        const base = 90 - FLY_BASE_PITCH, req = new Float64Array(ns), orbitLo = jSplit + 1, orbitHi = jSplit + nsO - 1;
+        for (let j = 0; j < ns; j++) {
+            const start = (j >= orbitLo && j <= orbitHi) ? FLY_ORBIT_ELEV_DEG : base;
+            const gP = groundExag(rLng[j], rLat[j]), gC = groundExag(cLng[j], cLat[j]);
+            req[j] = (isFinite(gP) && isFinite(gC)) ? requiredElevationDeg(rLng[j], rLat[j], gP, cLng[j], cLat[j], gC, hs[j], flyViewDistanceM(cLat[j], zm[j]), start) : start;
+        }
+        const wA = sec(FLY_ANTICIPATE_S), wR = Math.min(wA, sec(FLY_RELEASE_SMOOTH_S));
+        const orbitStartMs = jSplit * dtMs, orbitMs = orbitScale ? (nsO - 1) * dtMs : 0;
+        return { ns, nsF, dtMs, flightMs, totalMs: dtMs * (ns - 1), hs, cLng, cLat, zm, th: movingAvg(slidingMax(req, wA), wR), req,
+                 orbitScale, gipfelIdx, orbitStartMs, orbitMs, orbitLng, orbitLat, orbitF, cum, totalM: total, atGipfel: orbitScale > 0 && gipfelIdx < n - 1 };
+    }
+
+    // Kontinuierlicher Streckenindex (0..n-1) zum Zeitpunkt tMs, oder NaN während eines Kreisflugs (dann steht der
+    // Läufer fest am Kreisflug-Punkt, tr.gipfelIdx). Wird sowohl für die Läuferposition als auch für den
+    // Positions-Punkt im Höhenchart verwendet.
+    function runnerFracAt(tr, tMs) {
+        const route = flyRoute();                    // gefilterte Flug-Strecke (siehe flyFilterRoute)
+        const tA = tr.orbitStartMs, oM = tr.orbitMs;
+        let tFlight;
+        if (oM > 0 && tMs >= tA) {
+            if (tMs <= tA + oM) return NaN;                         // Kreisflug: Läufer steht (am Gipfel oder Ziel)
+            tFlight = tA + (tMs - tA - oM);                         // danach: Flug setzt ohne den Zeitverlust der Pause fort
+        } else tFlight = tMs;
+        const u = Math.min(tFlight, tr.flightMs) / tr.flightMs;           // Anteil der Flugzeit = Anteil der Strecke (Meter)
+        return tr.totalM >= 1 ? distToFrac(tr.cum, u * tr.totalM) : u * (route.length - 1);
+    }
+    function runnerAt(tr, tMs) {                                    // Läufer exakt auf der Strecke (Flug) bzw. am Kreisflug-Punkt
+        const route = flyRoute();
+        const n = route.length, f = runnerFracAt(tr, tMs);
+        if (isNaN(f)) return [tr.orbitLng, tr.orbitLat];
+        const i0 = Math.min(Math.floor(f), n - 2), t = f - i0;
+        return [route[i0].lon + (route[i0 + 1].lon - route[i0].lon) * t, route[i0].lat + (route[i0 + 1].lat - route[i0].lat) * t];
+    }
+
+    // Kameraposition zum Zeitpunkt tMs. Blickwinkel aus der Bahn, danach pro Frame noch einmal hart geprüft.
+    function flyPoseAt(tr, tMs) {
+        tMs = Math.min(tr.totalMs, Math.max(0, tMs));
+        const [rLng, rLat] = runnerAt(tr, tMs);
+        const x = tMs / tr.dtMs, j0 = Math.min(Math.floor(x), tr.ns - 2), q = x - j0;
+        const L = (a) => {                                          // kubisch (Catmull-Rom) durch die 10-Hz-Stützpunkte: keine Geschwindigkeitsknicke
+            const p0 = a[Math.max(0, j0 - 1)], p1 = a[j0], p2 = a[j0 + 1], p3 = a[Math.min(tr.ns - 1, j0 + 2)];
+            if (p0 === p1 && p1 === p2 && p2 === p3) return p1;      // konstante Strecke exakt halten (sonst Rauschen -> jumpTo feuert jeden Frame Zoom-Ereignisse)
+            return p1 + 0.5 * q * (p2 - p0 + q * (2 * p0 - 5 * p1 + 4 * p2 - p3 + q * (3 * (p1 - p2) + p3 - p0)));
+        };
+        const cLng = L(tr.cLng), cLat = L(tr.cLat), zoom = tr.zm[j0] + (tr.zm[j0 + 1] - tr.zm[j0]) * q, bearing = lerpAngle(tr.hs[j0], tr.hs[j0 + 1], q);
+        const base = 90 - FLY_BASE_PITCH;
+        let th = Math.max(base, L(tr.th));
+        const D = flyViewDistanceM(cLat, zoom), gP = groundExag(rLng, rLat), gC = groundExag(cLng, cLat);
+        if (isFinite(gP) && isFinite(gC)) th = requiredElevationDeg(rLng, rLat, gP, cLng, cLat, gC, bearing, D, th);
+        th = Math.min(Math.max(th, base), FLY_MAX_ELEV_DEG);   // Rundungsfehler abfangen, Pitch bleibt in [0, 60]
+        const r = th * Math.PI / 180;
+        const off = Math.hypot((cLng - rLng) * M_PER_DEG * Math.cos(cLat * Math.PI / 180), (cLat - rLat) * M_PER_DEG);
+        const inOrbit = tr.orbitMs > 0 && tMs >= tr.orbitStartMs && tMs <= tr.orbitStartMs + tr.orbitMs;
+        return { lng: cLng, lat: cLat, rLng, rLat, bearing, zoom, pitch: 90 - th, elevDeg: th, raised: Math.max(0, th - (inOrbit ? FLY_ORBIT_ELEV_DEG : base)), ground: gP, dist: D,
+                 camBehind: D * Math.cos(r), camUp: D * Math.sin(r), offset: off, phase: inOrbit ? 'Kreisflug' : 'Flug' };
+    }
+
+    // Läufer-Punkt. Im Flug ein DOM-Marker, der MapLibre folgt (synchron zur Kamera, hinter Bergen abgeblendet).
+    // subpixelPositioning: MapLibre rundet Marker sonst bei jedem 'moveend' auf ganze Pixel, und jumpTo löst das in jedem Frame aus.
+    // Im Kreisflug dreht die Kamera um den Läufer, er liegt exakt in der Bildmitte und bewegt sich auf dem Bildschirm nicht:
+    // dann ersetzt ihn ein fester Punkt in der Mitte des Kartenfensters, der nicht mehr nachgeführt wird (kein Zittern).
+    let runnerMarker = null, runnerFixed = null;
+    function setRunnerPos(lng, lat, atCenter) {
+        if (lng === null) {
+            if (runnerMarker) { runnerMarker.remove(); runnerMarker = null; }
+            if (runnerFixed) { runnerFixed.remove(); runnerFixed = null; }
+            return;
+        }
+        if (atCenter) {
+            if (runnerMarker) { runnerMarker.remove(); runnerMarker = null; }
+            if (!runnerFixed) {
+                runnerFixed = document.createElement('div'); runnerFixed.className = 'runner-dot runner-dot-fixed';
+                map.getContainer().appendChild(runnerFixed);
+            }
+            return;
+        }
+        if (runnerFixed) { runnerFixed.remove(); runnerFixed = null; }
+        if (!runnerMarker) {
+            const el = document.createElement('div'); el.className = 'runner-dot';
+            runnerMarker = new maplibregl.Marker({ element: el, subpixelPositioning: true }).setLngLat([lng, lat]).addTo(map);
+        } else runnerMarker.setLngLat([lng, lat]);
+    }
+
+    // MapLibre 4.7.1 prüft bei jedem jumpTo/easeTo mit Terrain, ob die Kamera nach seiner (näherungsweisen, teils veralteten)
+    // Geländehöhe im Berg läge (_elevateCameraIfInsideTerrain, vgl. maplibre-gl-js #4688) und ändert dann unbemerkt Zoom und
+    // Pitch. Das würde die Sichtprüfung aushebeln, weil die Kamera nicht dort steht, wo sie berechnet wurde. Abschalten lässt
+    // sich die Prüfung in 4.7.1 nicht, aber transformCameraUpdate läuft NACH ihr und darf ihr Ergebnis überschreiben.
+    // Das geschieht nur mit gültigen Höhendaten: unsere Posen halten FLY_MIN_AGL_M Abstand zum Boden. Ohne Höhendaten
+    // bleibt MapLibres Schutz aktiv. Wie oft MapLibre eingreifen wollte, steht in der Log-Zeile.
+    function flyCameraGuard(next) {
+        const w = flyWanted;
+        if (!w) return {};
+        const dz = Math.abs(next.zoom - w.zoom), dp = Math.abs(next.pitch - w.pitch);
+        if (dz > 1e-6 || dp > 1e-6) { flyGuardN++; flyGuardDz = Math.max(flyGuardDz, dz); flyGuardDp = Math.max(flyGuardDp, dp); }
+        if (!w.guard) return {};
+        return { center: new maplibregl.LngLat(w.lng, w.lat), zoom: w.zoom, pitch: w.pitch, bearing: w.bearing };
+    }
+    function jumpCamera(p) {
+        flyWanted = { lng: p.lng, lat: p.lat, zoom: p.zoom, pitch: p.pitch, bearing: p.bearing, guard: Number.isFinite(p.ground) };
+        const cam = { center: [p.lng, p.lat], zoom: p.zoom, bearing: p.bearing, pitch: p.pitch };
+        if (FLY_USE_EASETO) map.easeTo(Object.assign(cam, { duration: 0 })); else map.jumpTo(cam);
+    }
+    let flyBadPoseN = 0;
+    function applyFlyPose(p) {
+        // Schutz gegen NaN/Infinity (z.B. durch lückenhafte Höhendaten oder eine fehlerhafte Route): MapLibre
+        // kann daraus eine kaputte Kameramatrix bauen und dann OHNE jeden Fehler einfach alles leer/schwarz
+        // rendern ("Crash" ohne Konsolenfehler). Lieber den Frame überspringen und laut werden.
+        if (![p.lng, p.lat, p.zoom, p.bearing, p.pitch, p.rLng, p.rLat].every(Number.isFinite)) {
+            console.error('FLY: ungültige Kamera-/Läuferposition (NaN/Infinity) bei t=' + (flyTrack ? flyNowMs().toFixed(0) : '?') + 'ms - Frame übersprungen', p);
+            if (++flyBadPoseN >= FLY_BAD_POSE_MAX) { console.error('FLY: wiederholt ungültige Position - Flug gestoppt, letzter gültiger Stand bleibt stehen'); stopAnimation(); }
+            return;
+        }
+        flyBadPoseN = 0;
+        jumpCamera(p);
+        setRunnerPos(p.rLng, p.rLat, p.phase === 'Kreisflug');
+    }
+    function whenIdle(ms) {                      // wartet, bis die Karte fertig geladen ist (Ereignis 'idle'), höchstens ms
+        return new Promise(resolve => {
+            const done = () => { clearTimeout(tm); map.off('idle', done); resolve(); };
+            const tm = setTimeout(done, ms);
+            map.once('idle', done);
+        });
+    }
+
+    async function prepareFlyTrack() {
+        const route = flyRoute();                    // gefilterte Flug-Strecke (siehe flyFilterRoute)
+        const flightMs = FLY_FLIGHT_MS_MIN + (FLY_FLIGHT_MS_MAX - FLY_FLIGHT_MS_MIN) * Math.min(1, routeLengthM(route) / 1000 / FLY_FLIGHT_KM_FULL);   // nach Streckenlänge, nicht nach Punktzahl
+        try {
+            const zoomFlight = zoomFlightFor(routeLengthM(route), route[0].lat);   // selbe Rechnung wie in buildFlyTrack, für die passende Kachel-Vorlademenge
+            await Dem.ensure(route, flyViewDistanceM(route[0].lat, zoomFlight - (FLY_ADAPT_ZOOM ? FLY_ADAPT_MAX_ZOOMOUT : 0)) + 400, currentKey);
+        }
+        catch (e) { console.error('FLY: Höhendaten konnten nicht geladen werden', e); }
+        if (Dem.tiles.size === 0) console.error('FLY: keine Höhendaten - Kamera kann dem Gelände nicht ausweichen');
+        const track = buildFlyTrack(flightMs);
+        if (DEBUG_FLY) console.error('FLY: Kreisflug am Ziel: ' + (track.orbitScale ? 'ja (Distanz x' + track.orbitScale + ')' : 'nein (' + (FLY_ORBIT_MS > 0 ? 'Gelände lässt es nicht zu' : 'abgeschaltet') + ')'));
+        return track;
+    }
+
+    // ---- Zeitleiste (manuell verschiebbar) und Wiedergabetempo ----
+    // Statt einer festen Startzeit (performance.now() beim Start) läuft eine virtuelle Uhr: flyClockMs ist der
+    // Stand bei der letzten Synchronisation (flyClockRef, echte Zeit), die Restdauer läuft mit dem aktuellen
+    // Tempo (FLY_RATES[flyRateIdx]) weiter. Seek und Tempowechsel synchronisieren beide neu, der Flug macht an
+    // der neuen Stelle im neuen Tempo weiter.
+    function flyNowMs() { return flyTrack ? Math.min(flyTrack.totalMs, Math.max(0, flyClockMs + (performance.now() - flyClockRef) * FLY_RATES[flyRateIdx])) : 0; }
+    function flyFormatTime(ms) { const s = Math.round(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+    function flyUpdateRateLabel() { document.getElementById('flyRateLabel').innerText = FLY_RATES[flyRateIdx] + '×'; }
+    function flyChangeRate(delta) {
+        if (!flyTrack) return;
+        flyClockMs = flyNowMs(); flyClockRef = performance.now();                    // aktuellen Stand einfrieren, dann Tempo wechseln
+        flyRateIdx = Math.min(FLY_RATES.length - 1, Math.max(0, flyRateIdx + delta));
+        flyUpdateRateLabel();
+    }
+    let flySeekFixToken = 0;
+    function flySeekApply(t) {                     // Kamera + Höhenpunkt exakt auf Zeit t setzen
+        flyClockMs = t; flyClockRef = performance.now();
+        applyFlyPose(flyPoseAt(flyTrack, t));
+        flyUpdateElevDot(flyTrack, t);
+        // Kein Vorab-Laden der ganzen Strecke (das sah man als Flackern) - stattdessen sofort springen und, falls
+        // MapLibres Terrain für diese noch nie besuchte Stelle gerade erst nachlädt, EINMAL korrigieren, sobald
+        // es fertig ist. Bei durchgehender Wiedergabe passiert genau das sowieso bei jedem Frame von selbst.
+        const myFix = ++flySeekFixToken;
+        map.once('idle', () => { if (myFix === flySeekFixToken && flyTrack) applyFlyPose(flyPoseAt(flyTrack, t)); });
+    }
+    let flyLastSeekApplyMs = -Infinity;
+    function flySeekInput() {                     // beim Ziehen/Klicken: Flug anhalten, zur neuen Stelle springen
+        if (!flyTrack) return;
+        flySeeking = true;
+        flyPause();
+        const t = document.getElementById('flySeek').value / 1000 * flyTrack.totalMs;
+        document.getElementById('flyTimeCur').innerText = flyFormatTime(t);   // Anzeige immer sofort aktualisieren, ist billig
+        const now = performance.now();
+        if (now - flyLastSeekApplyMs < FLY_SEEK_THROTTLE_MS) return;   // schnelles Hin-und-Her-Ziehen: nicht jedes einzelne Zwischenevent anwenden,
+        flyLastSeekApplyMs = now;                    // sonst flutet das MapLibre/die Geländeabfrage mit weit auseinanderliegenden Sprüngen
+        flySeekApply(t);
+    }
+    function flySeekDone() {
+        flySeeking = false;
+        if (flyTrack) { flyLastSeekApplyMs = performance.now(); flySeekApply(document.getElementById('flySeek').value / 1000 * flyTrack.totalMs); }   // Endposition beim Loslassen immer exakt anwenden, auch wenn die Drossel sie übersprungen hat
+    }
+
+    // Anhalten (auf der Zeitleiste stehenbleiben, Button wird zu "Weiter") bzw. Fortsetzen an derselben Stelle.
+    function flyPause() {
+        if (!animationRunning || flyPaused || !flyTrack) return;
+        flyPaused = true;
+        if (flyRaf !== null) cancelAnimationFrame(flyRaf);
+        flyRaf = null;
+        document.getElementById('btnFlyover').innerText = "Weiter";
+    }
+    function flyResume() {
+        if (!flyPaused) return;
+        flyPaused = false;
+        flyClockRef = performance.now();
+        document.getElementById('btnFlyover').innerText = "Stop";
+        flyRaf = requestAnimationFrame(flyFrame);
+    }
+
+    // ---- Kleines Höhendiagramm unter der Zeitleiste: Streckenverlauf (Index) über der GPS-Höhe (p.alt), mit
+    // wanderndem Punkt für die aktuelle Position und einer Markierung am Kreisflug-Punkt (falls einer gefunden wurde).
+    function flyBuildElevChart(track) {
+        const route = flyRoute();                    // gefilterte Flug-Strecke (siehe flyFilterRoute)
+        const svg = document.getElementById('flyElev'), n = route.length;
+        track.elevOk = false;
+        if (n < 2 || route[0].alt === undefined || route[0].alt === null) { svg.classList.add('hidden'); return; }
+        let minA = Infinity, maxA = -Infinity;
+        for (let i = 0; i < n; i++) { const a = route[i].alt; if (isFinite(a)) { if (a < minA) minA = a; if (a > maxA) maxA = a; } }
+        if (!isFinite(minA) || !isFinite(maxA) || maxA <= minA) { svg.classList.add('hidden'); return; }
+        const W = 400, H = 44, PAD = 3;
+        const xf = (i) => track.totalM >= 1 ? track.cum[i] / track.totalM : i / (n - 1);      // x = Streckenmeter (wie der Flug), nicht Punktindex
+        const xAt = i => xf(i) * W, yAt = a => H - PAD - (a - minA) / (maxA - minA) * (H - 2 * PAD);
+        // Bei sehr langen Aufzeichnungen (mehrere Stunden, oft 1 Punkt/Sekunde) nicht für jeden einzelnen
+        // Streckenpunkt ein Liniensegment zeichnen (das wären sonst zehntausende) - stattdessen in Buckets pro
+        // (Min, Max) herunterrechnen, damit Gipfel/Täler erhalten bleiben, aber der Pfad klein bleibt.
+        const MAXPTS = ELEV_CHART_MAX_PTS;
+        let idxs;
+        if (n <= MAXPTS) idxs = Array.from({ length: n }, (_, i) => i);
+        else {
+            idxs = [0];
+            let curB = -1, mnI = 0, mxI = 0;
+            const flush = () => { if (curB < 0) return; if (mnI <= mxI) { idxs.push(mnI); if (mxI !== mnI) idxs.push(mxI); } else { idxs.push(mxI); idxs.push(mnI); } };
+            for (let i = 0; i < n; i++) {                        // Buckets nach Strecke (x-Position), nicht nach Punktzahl
+                const b = Math.min(MAXPTS - 1, Math.floor(xf(i) * MAXPTS));
+                if (b !== curB) { flush(); curB = b; mnI = mxI = i; }
+                else { if (route[i].alt < route[mnI].alt) mnI = i; if (route[i].alt > route[mxI].alt) mxI = i; }
+            }
+            flush();
+            idxs.push(n - 1);
+        }
+        let d = 'M ' + xAt(idxs[0]).toFixed(1) + ' ' + yAt(route[idxs[0]].alt).toFixed(1);
+        for (let k = 1; k < idxs.length; k++) d += ' L ' + xAt(idxs[k]).toFixed(1) + ' ' + yAt(route[idxs[k]].alt).toFixed(1);
+        const area = d + ' L ' + W + ' ' + H + ' L 0 ' + H + ' Z';
+        let extra = '';
+        if (track.orbitScale > 0 && track.gipfelIdx < n - 1) {                                 // Kreisflug-Punkt mitten in der Strecke: markieren
+            extra = `<circle cx="${xAt(track.gipfelIdx).toFixed(1)}" cy="${yAt(route[track.gipfelIdx].alt).toFixed(1)}" r="3" fill="#E040FB" stroke="#fff" stroke-width="1"/>`;
+        }
+        svg.innerHTML = `<path d="${area}" fill="#2196F3" fill-opacity="0.18" stroke="none"/><path d="${d}" fill="none" stroke="#2196F3" stroke-width="1.5"/>${extra}`
+            + `<circle id="flyElevDot" cx="0" cy="${yAt(route[0].alt).toFixed(1)}" r="3.5" fill="#E040FB" stroke="#fff" stroke-width="1.5"/>`;
+        svg.classList.remove('hidden');
+        Object.assign(track, { elevOk: true, elevW: W, elevH: H, elevPad: PAD, elevMinA: minA, elevMaxA: maxA });
+    }
+    function flyUpdateElevDot(track, tMs) {
+        const route = flyRoute();                    // gefilterte Flug-Strecke (siehe flyFilterRoute)
+        if (!track.elevOk) return;
+        const dot = document.getElementById('flyElevDot');
+        if (!dot) return;
+        const n = route.length, f0 = runnerFracAt(track, tMs), i = isNaN(f0) ? track.orbitF : f0;
+        const i0 = Math.max(0, Math.min(n - 1, Math.floor(i))), i1 = Math.min(n - 1, i0 + 1), t = i - i0;
+        const alt = route[i0].alt + (route[i1].alt - route[i0].alt) * t;
+        const dm = track.totalM >= 1 ? (track.cum[i0] + (track.cum[i1] - track.cum[i0]) * t) / track.totalM : i / (n - 1);
+        dot.setAttribute('cx', (dm * track.elevW).toFixed(1));
+        dot.setAttribute('cy', (track.elevH - track.elevPad - (alt - track.elevMinA) / (track.elevMaxA - track.elevMinA) * (track.elevH - 2 * track.elevPad)).toFixed(1));
+    }
+
+    function toggleAnimation() {
+        if (route.length < 2) return;
+        if (!animationRunning) startAnimation();
+        else if (flyPaused) flyResume();
+        else stopAnimation();
+    }
+
+    function startAnimation() {
+        animationRunning = true; flyPaused = false;
+        flyPts = flyFilterRoute(route);
+        document.getElementById('btnFlyover').innerText = "Stop";
+        const token = ++flyToken;
+        (async () => {
+            const track = await prepareFlyTrack();
+            if (token !== flyToken) return;                    // in der Zwischenzeit gestoppt
+            flyTrack = track;
+            map.transformCameraUpdate = flyCameraGuard;
+            flyBuildElevChart(track);
+            applyFlyPose(flyPoseAt(track, 0));
+            flyUpdateElevDot(track, 0);
+            await whenIdle(FLY_START_IDLE_MS);                 // erst starten, wenn der Startpunkt geladen ist
+            if (token !== flyToken) return;
+            flyClockMs = 0; flyClockRef = performance.now(); flyLastLog = 0;
+            document.getElementById('flyTimeTotal').innerText = flyFormatTime(track.totalMs);
+            document.getElementById('flySeek').value = 0;
+            flyUpdateRateLabel();
+            document.getElementById('flyBar').classList.remove('hidden');
+            flyRaf = requestAnimationFrame(flyFrame);
+        })().catch(e => { console.error('FLY: Fehler', e); if (token === flyToken) stopAnimation(); });
+    }
+
+    function stopAnimation() {
+        animationRunning = false; flyPaused = false; flyToken++;
+        if (flyRaf !== null) cancelAnimationFrame(flyRaf);
+        flyRaf = null; flyTrack = null; flyPts = null;
+        map.transformCameraUpdate = null; flyWanted = null;
+        setRunnerPos(null);
+        document.getElementById('btnFlyover').innerText = "Flyover";
+        document.getElementById('flyBar').classList.add('hidden');
+    }
+
+    function flyFrame() {
+        if (!animationRunning || !flyTrack) return;
+        try {
+            const now = performance.now(), t = flyNowMs();
+            const p = flyPoseAt(flyTrack, t);
+            applyFlyPose(p);
+            flyUpdateElevDot(flyTrack, t);
+            if (!flySeeking) {
+                document.getElementById('flySeek').value = Math.round(t / flyTrack.totalMs * 1000);
+                document.getElementById('flyTimeCur').innerText = flyFormatTime(t);
+            }
+            if (DEBUG_FLY && now - flyLastLog > 1000) {
+                flyLastLog = now;
+                console.error(`FLY: ${p.phase} t=${(Math.min(t, flyTrack.totalMs) / 1000).toFixed(1)}s | Läufer:[${p.rLng.toFixed(5)},${p.rLat.toFixed(5)}] | Boden:${p.ground.toFixed(0)}m | Blickwinkel:${p.elevDeg.toFixed(1)}° (Gelände +${p.raised.toFixed(1)}°) | Kamera:${p.camUp.toFixed(0)}m hoch, ${p.camBehind.toFixed(0)}m dahinter | Läufer ${p.offset.toFixed(0)}m neben der Bildmitte | Zoom ${p.zoom.toFixed(2)} | MapLibre-Kollisionskorrektur: ${flyGuardN}x (max dZoom ${flyGuardDz.toFixed(3)}, dPitch ${flyGuardDp.toFixed(1)}°)`);
+                flyGuardN = 0; flyGuardDz = 0; flyGuardDp = 0;
+            }
+            if (t >= flyTrack.totalMs) { stopAnimation(); return; }
+        } catch (e) {
+            // Ohne das hier würde ein Fehler mitten im Flug den rAf-Loop einfach lautlos beenden (letzter Frame
+            // bleibt stehen, in der Konsole steht oft nichts Hilfreiches) - lieber laut werden und sauber stoppen.
+            console.error('FLY: Fehler im Flug-Frame bei t=' + (flyTrack ? flyNowMs().toFixed(0) : '?') + 'ms - Flug gestoppt', e);
+            stopAnimation();
+            return;
+        }
+        flyRaf = requestAnimationFrame(flyFrame);
+    }
+
+    window.onload = () => { const urlParams = new URLSearchParams(window.location.search); const key = urlParams.get('key'); const showFlyover = urlParams.get('flyover') !== 'false'; if (key && key.length > 5) initMap(key, showFlyover); else document.getElementById('token-dialog').classList.remove('hidden'); };
+    // PC-Viewer: Route kommt per postMessage vom Öffner (ECG-Viewer); Handshake nach dem Laden
+    // ---- Cursor-Synchronisation mit dem ECG-Viewer (blauer Zielpunkt = Cursor) ---- CURSOR-SYNC BEGIN
+    let cursorDrag = false, cursorSendT = 0;
+    function sendCursorToViewer(t) { if (window.opener) window.opener.postMessage({ type: 'ecg-map-cursor', t: t }, '*'); }
+    function nearestRouteIdx(lng, lat) {
+        const k = Math.cos(lat * Math.PI / 180);
+        let bi = -1, bd = Infinity;
+        for (let i = 0; i < route.length; i++) {
+            const dx = (route[i].lon - lng) * k, dy = route[i].lat - lat, d = dx * dx + dy * dy;
+            if (d < bd) { bd = d; bi = i; }
+        }
+        return bi;
+    }
+    function clearCursorMarker() {
+        ['target-layer', 'target-casing', 'target-halo'].forEach(id => { if (map && map.getLayer(id)) map.removeLayer(id); });
+        if (map && map.getSource('target-source')) map.removeSource('target-source');
+    }
+    // Cursor auf Zeit t setzen (t = null: entfernen); pan: Karte nachführen, falls der Punkt außerhalb des Bildes liegt
+    function setCursorTime(t, pan, pt) {
+        targetTime = (t === null || t === undefined) ? null : t;
+        if (!map || !isMapReady || route.length === 0) return;
+        if (targetTime === null) { clearCursorMarker(); return; }
+        const p = pt || findClosestPoint(targetTime);
+        if (!p) return;
+        const feat = { 'type': 'Feature', 'geometry': { 'type': 'Point', 'coordinates': [p.lon, p.lat] } };
+        const src = map.getSource('target-source');
+        if (src && map.getLayer('target-layer')) src.setData(feat);
+        else {
+            let bId = null;
+            for (const l of map.getStyle().layers) { if (l.type === 'symbol' || l.type === 'fill-extrusion' || l.id.includes('building')) { bId = l.id; break; } }
+            drawTargetMarker(bId);
+        }
+        if (pan && !animationRunning && !cursorDrag && !map.getBounds().contains([p.lon, p.lat])) map.easeTo({ center: [p.lon, p.lat], duration: 350 });
+    }
+    function applyCursorFromMap(i, final) {
+        const p = route[i]; if (!p) return;
+        setCursorTime(p.time, false, p);
+        const now = performance.now();
+        if (final || now - cursorSendT > 40) { cursorSendT = now; sendCursorToViewer(p.time); }
+    }
+    function initCursorSync() {
+        const canvas = map.getCanvas();
+        let lastIdx = -1;
+        const start = e => { if (!map.getLayer('target-layer')) return; e.preventDefault(); cursorDrag = true; map.dragPan.disable(); canvas.style.cursor = 'grabbing'; };
+        const move = e => {
+            if (!cursorDrag) return;
+            const i = nearestRouteIdx(e.lngLat.lng, e.lngLat.lat);
+            if (i >= 0) { lastIdx = i; applyCursorFromMap(i, false); }
+        };
+        const end = () => {
+            if (!cursorDrag) return;
+            cursorDrag = false; map.dragPan.enable(); canvas.style.cursor = '';
+            if (lastIdx >= 0) applyCursorFromMap(lastIdx, true);
+        };
+        map.on('mousedown', 'target-layer', start); map.on('touchstart', 'target-layer', start);
+        map.on('mouseenter', 'target-layer', () => { if (!cursorDrag) canvas.style.cursor = 'grab'; });
+        map.on('mouseleave', 'target-layer', () => { if (!cursorDrag) canvas.style.cursor = ''; });
+        map.on('mousemove', move); map.on('touchmove', move);
+        map.on('mouseup', end); map.on('touchend', end);
+        window.addEventListener('mouseup', end);
+        map.on('click', 'route', e => {           // Klick auf die Strecke setzt den Cursor dorthin
+            if (cursorDrag) return;
+            const i = nearestRouteIdx(e.lngLat.lng, e.lngLat.lat);
+            if (i >= 0) { lastIdx = i; applyCursorFromMap(i, true); }
+        });
+    }
+    // ---- CURSOR-SYNC END
+    window.addEventListener('message', e => {
+        if (!window.opener || e.source !== window.opener || !e.data) return;
+        if (e.data.type === 'ecg-map-route' && typeof e.data.json === 'string') ladeEigeneRouteInKarte(e.data.json);
+        else if (e.data.type === 'ecg-map-cursor') setCursorTime(typeof e.data.t === 'number' ? e.data.t : null, e.data.pan !== false);
+    });
+    window.addEventListener('load', () => { if (window.opener) window.opener.postMessage({ type: 'ecg-map-ready' }, '*'); });
+</script>
+</body>
+</html>
