@@ -99,6 +99,20 @@
   .drv input { flex: 1; height: 32px; padding: 0 10px; border: 1px solid #adb5bd; border-radius: 6px; font-size: .85rem; }
   input[type=file] { display: none; }
 
+
+  /* Karten-Dialog */
+  .modal { position: fixed; inset: 0; z-index: 40; background: rgba(10,20,30,.45); display: flex; align-items: center; justify-content: center; }
+  .modal.hidden { display: none; }
+  .modalbox { background: #fff; border-radius: 10px; padding: 18px 20px; width: min(460px, 92vw); box-shadow: 0 10px 40px rgba(0,0,0,.35); font-size: .88rem; }
+  .modalbox h3 { margin: 0 0 8px; color: #1a3a5f; }
+  .modalbox p { margin: 6px 0 10px; line-height: 1.45; }
+  .modalbox p.hidden { display: none; }
+  .modalbox .fld { display: flex; flex-direction: column; gap: 4px; margin: 8px 0; font-weight: 600; font-size: .8rem; color: #495057; }
+  .modalbox .fld input[type=text] { height: 30px; padding: 0 8px; border: 1px solid #adb5bd; border-radius: 6px; font-size: .85rem; font-weight: 400; }
+  .modalbox .fld input[type=number] { height: 28px; padding: 0 6px; border: 1px solid #adb5bd; border-radius: 6px; }
+  .modalbox .chk2 { display: flex; align-items: center; gap: 6px; margin: 5px 0; cursor: pointer; }
+  .mbtns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; flex-wrap: wrap; }
+
   /* Poincaré-Fenster (frei verschiebbar, skalierbar, optional eigenes Browserfenster) */
   .pcwin {
     position: fixed; z-index: 20; left: 0; top: 0; width: 380px; height: 430px; min-width: 260px; min-height: 280px;
@@ -158,6 +172,8 @@
   <button class="btn" id="btnJump" title="Zu einer Uhrzeit springen">Springen …</button>
   <div class="sep"></div>
   <button class="btn" id="btnPc" title="Poincaré-Fenster ein-/ausblenden (O)">Poincaré</button>
+  <button class="btn" id="btnMap" hidden title="3D-Karte öffnen (ab Cursor, falls gesetzt) – Rechtsklick: Optionen">Karte</button>
+  <button class="btn" id="btnMapOpt" hidden title="Karten-Optionen und MapTiler-Key">⚙</button>
   <div class="sep"></div>
   <label class="chk"><input type="checkbox" id="chkAcc" checked>ACC</label>
   <label class="chk"><input type="checkbox" id="chkHr" checked>Puls</label>
@@ -191,6 +207,25 @@
 
 <div id="status"><span class="hint">Ziehen: Bereich zoomen · Mausrad: Zoom · Shift+Ziehen / Mittelklick: verschieben · Klick: Cursor · Doppelklick: alles</span></div>
 
+<div class="modal hidden" id="mapDlg">
+  <div class="modalbox">
+    <h3>Karte (MapTiler)</h3>
+    <p id="mapGuide" class="hidden">Für die 3D-Karte wird ein kostenloser MapTiler-Key benötigt:
+      <button class="btn" id="mapKeyCreate">Key bei MapTiler erstellen</button><br>
+      Danach den Key hier einfügen. Er wird nur in diesem Browser gespeichert.</p>
+    <label class="fld">MapTiler-Key <input type="text" id="mapKeyIn" autocomplete="off" spellcheck="false" placeholder="Key einfügen"></label>
+    <label class="chk2"><input type="checkbox" id="moMarkers"> Marker anzeigen</label>
+    <label class="chk2"><input type="checkbox" id="moRoute"> Strecke anzeigen</label>
+    <label class="chk2"><input type="checkbox" id="moTarget"> Cursor-Position als Ziel verwenden</label>
+    <label class="chk2"><input type="checkbox" id="moSync"> Cursor mit Karte synchronisieren</label>
+    <label class="chk2"><input type="checkbox" id="moThin"> Strecke ausdünnen (max. ca. 2000 Punkte)</label>
+    <label class="fld">Höhenkorrektur (m, wird von der GPS-Höhe abgezogen) <input type="number" id="moAlt" step="1" style="width:80px"></label>
+    <div class="mbtns"><button class="btn" id="mapDlgClose">Schließen</button>
+      <button class="btn" id="mapDlgSave">Speichern</button>
+      <button class="btn primary" id="mapDlgOpen">Speichern &amp; Karte öffnen</button></div>
+  </div>
+</div>
+
 <div class="pcwin hidden" id="pcWin">
   <div class="pchead" id="pcHead">
     <span>Poincaré</span><span class="sp"></span>
@@ -208,9 +243,21 @@
 <script>
 'use strict';
 
+const ECG_RATE = 130;
+const ECG_INTERPOLATION = {
+    cutoffHz: 50,       // FIR cutoff in Hz
+    taps: 128,          // total taps at the 8x output rate
+    factor: 8,          // maximum interpolation factor
+    kaiserBeta: 4.5
+};
+const ECG_INTERPOLATION_THRESHOLDS = [
+    { samplesPerPixel: 0.5, factor: 2 },
+    { samplesPerPixel: 0.25, factor: 4 },
+    { samplesPerPixel: 0.125, factor: 8 }
+];
+
 // ================================================================ Parser
 // Format wie in FileViewerActivity.parseFile (Streams E0, A0, H0, R0, M0, T0; GPS wird übersprungen)
-const ECG_RATE = 130;
 const MARKER_INFO = {
     1: { label: 'ES',    color: '#e0302b' },
     2: { label: 'AF',    color: '#c2188f' },
@@ -232,6 +279,57 @@ function median(a) {
     if (!a.length) return NaN;
     const s = a.slice().sort((x, y) => x - y);
     return s[s.length >> 1];
+}
+
+function sinc(x) { return Math.abs(x) < 1e-12 ? 1 : Math.sin(Math.PI * x) / (Math.PI * x); }
+function besselI0(x) {
+    let sum = 1, term = 1;
+    for (let k = 1; k < 50; k++) {
+        term *= (x * x) / (4 * k * k);
+        sum += term;
+        if (term < sum * 1e-14) break;
+    }
+    return sum;
+}
+function makeEcgInterpolationPhases() {
+    const { cutoffHz, taps, factor, kaiserBeta } = ECG_INTERPOLATION;
+    const normalizedCutoff = 2 * cutoffHz / ECG_RATE;
+    if (!(cutoffHz > 0 && cutoffHz < ECG_RATE / 2) ||
+        !Number.isInteger(taps) || taps < 2 ||
+        !Number.isInteger(factor) || factor < 8 || factor % 8 !== 0 || taps % factor !== 0 ||
+        !(kaiserBeta >= 0)) {
+        throw new Error('Ungültige ECG-Interpolationsparameter');
+    }
+
+    const radius = (taps - 1) / (2 * factor);
+    const maxOffset = Math.ceil(radius);
+    const offsets = Array.from({ length: 2 * maxOffset + 1 }, (_, i) => i - maxOffset);
+    const i0 = besselI0(kaiserBeta);
+    const phases = Array.from({ length: factor }, (_, phase) => {
+        const fraction = phase / factor;
+        const weights = offsets.map(offset => {
+            const distance = fraction - offset;
+            const r = distance / radius;
+            if (Math.abs(r) > 1) return 0;
+            const window = besselI0(kaiserBeta * Math.sqrt(1 - r * r)) / i0;
+            return normalizedCutoff * sinc(normalizedCutoff * distance) * window;
+        });
+        const sum = weights.reduce((total, weight) => total + weight, 0);
+        if (!Number.isFinite(sum) || Math.abs(sum) < 1e-12) throw new Error('Ungültige ECG-FIR-Phase');
+        return { offsets, weights: weights.map(weight => weight / sum) };
+    });
+    return phases;
+}
+const ECG_INTERPOLATION_PHASES = makeEcgInterpolationPhases();
+
+function interpolatedEcgValue(values, index, phase) {
+    const { offsets, weights } = ECG_INTERPOLATION_PHASES[phase];
+    let value = 0;
+    for (let i = 0; i < offsets.length; i++) {
+        const sampleIndex = Math.max(0, Math.min(values.length - 1, index + offsets[i]));
+        value += values[sampleIndex] * weights[i];
+    }
+    return value;
 }
 
 // Zeit eines (gebrochenen) Sample-Index über die T0-Anker: linear zwischen Ankern
@@ -299,7 +397,7 @@ function parseEcg(buf) {
     let ne = 0, na = 0;
     const aT = [0], aNE = [0], aNA = [0];
     let lastAnchor = 0;
-    const hrRaw = [], rrBatches = [], markers = [];
+    const hrRaw = [], rrBatches = [], markers = [], gpsRaw = [];
 
     while (pos + 3 <= L) {
         if (u8[pos] !== 0xAA) { pos++; continue; }
@@ -345,7 +443,14 @@ function parseEcg(buf) {
             case 5:   // M0
                 if (len >= 5) markers.push({ type: u8[p], time: dv.getUint32(p + 1, false) / 1000 });
                 break;
-            default: break;   // L0 (GPS) u. a. werden hier nicht benötigt
+            case 6:   // L0: GPS (lat/lon int32 1e-7°, Speed uint16 /256 m/s, Genauigkeit int16 /10 m, Höhe int16 /10 m)
+                if (len >= 14) {
+                    gpsRaw.push({ ne, na, anchor: lastAnchor,
+                        lat: dv.getInt32(p, false) / 1e7, lon: dv.getInt32(p + 4, false) / 1e7,
+                        speed: dv.getUint16(p + 8, false) / 256, acc: dv.getInt16(p + 10, false) / 10, alt: dv.getInt16(p + 12, false) / 10 });
+                }
+                break;
+            default: break;
         }
     }
     if (ne === 0 && na === 0 && hrRaw.length === 0 && rrBatches.length === 0) throw new Error('Keine Daten in der Datei');
@@ -407,6 +512,11 @@ function parseEcg(buf) {
         cumBeats.forEach((c, i) => { rrD.T[i] = c + rrFit.off + rrFit.slope * c; rrD.V[i] = rrMs[i]; });
     }
 
+    // ---- GPS (Höhe roh; Korrektur beim Kartenaufruf)
+    const gpsD = { T: new Float64Array(gpsRaw.length), lat: new Float64Array(gpsRaw.length), lon: new Float64Array(gpsRaw.length),
+                   speed: new Float32Array(gpsRaw.length), acc: new Float32Array(gpsRaw.length), alt: new Float32Array(gpsRaw.length) };
+    gpsRaw.forEach((g, i) => { gpsD.T[i] = posTime(g); gpsD.lat[i] = g.lat; gpsD.lon[i] = g.lon; gpsD.speed[i] = g.speed; gpsD.acc[i] = g.acc; gpsD.alt[i] = g.alt; });
+
     markers.sort((x, y) => x.time - y.time);
 
     // Gesamtzeitbereich
@@ -414,7 +524,7 @@ function parseEcg(buf) {
     for (const s of [ecgD, accD, hrD, rrD]) {
         if (s && s.T.length) { t0 = Math.min(t0, s.T[0]); t1 = Math.max(t1, s.T[s.T.length - 1]); }
     }
-    return { startMs, ecg: ecgD, acc: accD, hr: hrD, rr: rrD, markers, rate: ECG_RATE, gaps,
+    return { startMs, ecg: ecgD, acc: accD, hr: hrD, rr: rrD, gps: gpsD, markers, rate: ECG_RATE, gaps,
              anchors: aT.length - 1, t0, t1, rrFit };
 }
 
@@ -462,11 +572,13 @@ async function loadBuffer(getBuf, name) {
         view = { a: D.t0, b: D.t0 + Math.min(30, total) };
         $('drop').classList.add('hidden');
         $('btnPrint').disabled = !D.ecg;
+        $('btnMap').hidden = $('btnMapOpt').hidden = !(D.gps && D.gps.T.length);
         const cnt = t => D.markers.filter(m => m.type === t).length;
         $('fileinfo').textContent = name + ' · ' + dateStr(D.startMs) + ' ' + tod(D.t0) + ' · ' + dur(total) +
             (D.ecg ? ' · ' + D.ecg.T.length.toLocaleString('de-DE') + ' EKG-Samples' : '') +
             (D.gaps ? ' · ' + D.gaps + ' Lücken' : '') +
             (D.rr.T.length ? ' · ' + D.rr.T.length.toLocaleString('de-DE') + ' RR' : '') +
+            (D.gps.T.length ? ' · ' + D.gps.T.length.toLocaleString('de-DE') + ' GPS' : '') +
             (D.markers.length ? ' · Marker: ES ' + cnt(1) + ', AF ' + cnt(2) + ', AVNRT ' + cnt(3) +
                 (D.markers.length - cnt(1) - cnt(2) - cnt(3) ? ', andere ' + (D.markers.length - cnt(1) - cnt(2) - cnt(3)) : '') : '');
         $('tagRr').innerHTML = 'RR [ms]' + ['1', '2', '3'].map(t =>
@@ -564,6 +676,29 @@ $('btnMNext').onclick = () => gotoMarker(1);
 
 // ---------------------------------------------------------------- Maus
 let drag = null;
+// Cursor setzen (t = null: entfernen). fromMap: kam von der Karte -> Diagramm bei Bedarf nachführen, nicht zurückmelden
+let mapCurSend = 0;
+function notifyMapCursor(force) {
+    if (!mapWin || mapWin.closed) return;
+    const now = performance.now();
+    if (!force && now - mapCurSend < 40) return;
+    if (!mapOpts().sync) return;
+    mapCurSend = now;
+    mapWin.postMessage({ type: 'ecg-map-cursor', t: cur, pan: true }, '*');
+}
+function setCursor(t, fromMap, force) {
+    cur = t;
+    if (fromMap && t != null && (t < view.a || t > view.b)) {
+        const span = view.b - view.a;
+        setView(t - span / 2, t + span / 2, false);
+    } else { drawOv(); drawOverlays(); updateStatus(); }
+    if (!fromMap) notifyMapCursor(!!force);
+}
+function nearCursor(box, clientX) {
+    if (cur == null || cur < view.a || cur > view.b) return false;
+    const g = geoOf(box);
+    return Math.abs(PAD.l + (cur - view.a) / (view.b - view.a) * g.pw + g.r.left - clientX) <= 6;
+}
 function geoOf(box) { const r = box.getBoundingClientRect(); return { r, pw: r.width - PAD.l - PAD.r }; }
 KEYS.forEach(k => {
     const box = E[k].box;
@@ -571,6 +706,10 @@ KEYS.forEach(k => {
         if (!D || e.button === 2) return;
         box.setPointerCapture(e.pointerId);
         const g = geoOf(box);
+        if (e.button === 0 && nearCursor(box, e.clientX)) {      // Cursorlinie greifen und verschieben
+            drag = { mode: 'cursor', x0: e.clientX, moved: true, g, box };
+            return;
+        }
         const pan = e.button === 1 || (e.shiftKey !== panMode);
         if (e.button === 1) e.preventDefault();
         drag = { mode: pan ? 'pan' : 'select', x0: e.clientX, a0: view.a, span: view.b - view.a, moved: false, g, box };
@@ -579,6 +718,11 @@ KEYS.forEach(k => {
         if (!D) return;
         const g = drag ? drag.g : geoOf(box);
         const tAt = x => view.a + (x - g.r.left - PAD.l) / g.pw * (view.b - view.a);
+        if (drag && drag.mode === 'cursor') {
+            const t = Math.max(view.a, Math.min(view.b, tAt(e.clientX)));
+            hoverT = t; setCursor(t, false);
+            return;
+        }
         if (drag) {
             const dx = e.clientX - drag.x0;
             if (!drag.moved && Math.abs(dx) > 5) { drag.moved = true; if (drag.mode === 'pan') box.classList.add('panning'); }
@@ -599,18 +743,20 @@ KEYS.forEach(k => {
         }
         const t = tAt(e.clientX);
         hoverT = (t >= view.a && t <= view.b) ? t : null;
+        box.style.cursor = nearCursor(box, e.clientX) ? 'ew-resize' : '';
         drawOverlays(); updateStatus();
     });
     box.addEventListener('pointerup', e => {
         if (!D || !drag) return;
         const g = drag.g;
+        if (drag.mode === 'cursor') { notifyMapCursor(true); drag = null; drawOverlays(); return; }
         if (drag.mode === 'select' && drag.moved && sel) {
             const lo = Math.min(sel.t0, sel.t1), hi = Math.max(sel.t0, sel.t1);
             sel = null;
             if (hi - lo > 0.02) setView(lo, hi, true); else drawOverlays();
         } else if (!drag.moved) {
             const t = view.a + (e.clientX - g.r.left - PAD.l) / g.pw * (view.b - view.a);
-            if (t >= view.a && t <= view.b) { cur = t; drawOverlays(); updateStatus(); }
+            if (t >= view.a && t <= view.b) setCursor(t, false, true);
         }
         box.classList.remove('panning');
         drag = null; sel = null; drawOverlays();
@@ -652,6 +798,7 @@ document.addEventListener('keydown', e => {
     else if (e.key === 'End') setView(D.t1 - span, D.t1);
     else if (e.key === 'Backspace') goBack();
     else if (e.key === 'Escape') { sel = null; drag = null; drawOverlays(); }
+    else if (e.key === 'Delete') setCursor(null, false, true);
     else if (e.key === '[') gotoMarker(-1);
     else if (e.key === ']') gotoMarker(1);
     else if (e.key === 'p' || e.key === 'P') sendToPrint();
@@ -747,6 +894,35 @@ function plotSeries(ctx, T, V, i0, i1, X, Yp, pw, color, lw, gapMax) {
     ctx.stroke();
 }
 
+function plotEcgSeries(ctx, T, V, i0, i1, X, Yp, pw, color, lw) {
+    const samplesPerPixel = (i1 - i0 + 1) / Math.max(1, pw);
+    let factor = 1;
+    for (const threshold of ECG_INTERPOLATION_THRESHOLDS) {
+        if (samplesPerPixel < threshold.samplesPerPixel) factor = threshold.factor;
+    }
+    if (factor === 1) {
+        plotSeries(ctx, T, V, i0, i1, X, Yp, pw, color, lw);
+        return;
+    }
+
+    const phaseStep = ECG_INTERPOLATION.factor / factor;
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (let i = i0; i < i1; i++) {
+        for (let sub = 0; sub < factor; sub++) {
+            const phase = sub * phaseStep;
+            const fraction = phase / ECG_INTERPOLATION.factor;
+            const t = T[i] + (T[i + 1] - T[i]) * fraction;
+            const y = Yp(interpolatedEcgValue(V, i, phase));
+            if (!started) { ctx.moveTo(X(t), y); started = true; } else ctx.lineTo(X(t), y);
+        }
+    }
+    const y = Yp(interpolatedEcgValue(V, i1, 0));
+    if (!started) ctx.moveTo(X(T[i1]), y); else ctx.lineTo(X(T[i1]), y);
+    ctx.stroke();
+}
+
 function drawBase(k) {
     const { ctx, W, H } = setupCanvas(E[k].base);
     const g = geo(k, W, H), { top, ph, pw } = g;
@@ -808,7 +984,7 @@ function drawBase(k) {
 
     if (r0) {
         if (k === 'ecg') {
-            plotSeries(ctx, S.T, S.Y, r0[0], r0[1], X, Yp, pw, '#14212e', 1.2);
+            plotEcgSeries(ctx, S.T, S.Y, r0[0], r0[1], X, Yp, pw, '#14212e', 1.2);
             if (pw / Math.max(1, span * D.rate) > 6) {
                 ctx.fillStyle = '#14212e';
                 for (let i = r0[0]; i <= r0[1]; i++) ctx.fillRect(X(S.T[i]) - 1.5, Yp(S.Y[i]) - 1.5, 3, 3);
@@ -1017,6 +1193,7 @@ function pcAxisRange(points) {
 
 // ---- Fenster
 const pcWin = $('pcWin'), pcCanvas = $('pcCanvas'), pcInfo = $('pcInfo'), pcTol = $('pcTol');
+const pcLogBtn = $('pcLog'), pcPopBtn = $('pcPop');
 let pcOpen = false, pcRes = null, pcKey = '', pcPopup = null, pcSaveT = 0;
 const PC_STORE = 'ecgViewer.poincare';
 
@@ -1075,7 +1252,13 @@ if (window.ResizeObserver) {
 
 // Eigenes Browserfenster (z. B. zweiter Monitor); dasselbe Element wird ins Popup verschoben
 function pcPopOut() {
-    if (pcPopup && !pcPopup.closed) { pcPopup.focus(); return; }
+    if (pcPopup && !pcPopup.closed) {
+        const w = pcPopup;
+        pcPopBack();
+        w.close();
+        window.focus();
+        return;
+    }
     const w = window.open('', 'ecg-poincare', 'popup=yes,width=480,height=540');
     if (!w) { alert('Popup wurde blockiert – bitte Popups für diese Seite erlauben.'); return; }
     // Leeres about:blank startet im Quirks-Modus -> Seite mit DOCTYPE neu schreiben
@@ -1088,20 +1271,27 @@ function pcPopOut() {
     w.document.body.appendChild(w.document.adoptNode(pcWin));
     pcWin.classList.add('popped');
     pcPopup = w;
+    pcUpdatePopButton();
     w.addEventListener('resize', () => drawPc());
     w.addEventListener('pagehide', pcPopBack);
     pcPopup.__poll = setInterval(() => { if (w.closed) pcPopBack(); }, 500);
     drawPc();
 }
+function pcUpdatePopButton() {
+    const popped = !!pcPopup;
+    pcPopBtn.textContent = popped ? '↙' : '↗';
+    pcPopBtn.title = popped ? 'Ins Hauptfenster zurückholen' : 'In eigenes Browserfenster öffnen (z. B. auf zweitem Monitor)';
+}
 function pcPopBack() {
     if (!pcPopup) return;
     clearInterval(pcPopup.__poll);
     pcPopup = null;
+    pcUpdatePopButton();
     pcWin.classList.remove('popped');
     try { document.body.appendChild(document.adoptNode(pcWin)); } catch (e) { console.error(e); }
     if (pcOpen) { pcRestore(); drawPc(); }
 }
-$('pcPop').onclick = pcPopOut;
+pcPopBtn.onclick = pcPopOut;
 window.addEventListener('beforeunload', () => { if (pcPopup) { try { pcPopup.close(); } catch (e) {} } });
 
 // ---- Berechnung + Anzeige
@@ -1137,9 +1327,9 @@ function pcGradient(f) {
 const PC_CHUNKS = 40;
 let pcLog = false;
 try { pcLog = localStorage.getItem(PC_STORE + '.log') === '1'; } catch (e) {}
-function pcSetLogBtn() { $('pcLog').classList.toggle('on', pcLog); }
+function pcSetLogBtn() { pcLogBtn.classList.toggle('on', pcLog); }
 pcSetLogBtn();
-$('pcLog').onclick = () => {
+pcLogBtn.onclick = () => {
     pcLog = !pcLog; pcSetLogBtn();
     try { localStorage.setItem(PC_STORE + '.log', pcLog ? '1' : '0'); } catch (e) {}
     drawPc();
@@ -1220,7 +1410,10 @@ function sendToPrint() {
     const si = Math.min(lb(D.ecg.T, tStart), D.ecg.T.length - 1);
     pending = {
         type: 'ecg-print-data',
-        data: { fileName: D.name, startTimeMillis: D.startMs, sampleRate: D.rate, startIndex: si, ecgY: D.ecg.Y }
+        data: {
+            fileName: D.name, startTimeMillis: D.startMs, sampleRate: D.rate, startIndex: si, ecgY: D.ecg.Y,
+            ecgInterpolation: { sampleRate: ECG_RATE, factor: ECG_INTERPOLATION.factor, phases: ECG_INTERPOLATION_PHASES }
+        }
     };
     if (printWin && !printWin.closed) { printWin.postMessage(pending, '*'); printWin.focus(); }
     else {
@@ -1233,6 +1426,117 @@ window.addEventListener('message', ev => {
 });
 $('btnPrint').onclick = sendToPrint;
 
+
+
+// ================================================================ Karte (MapTiler / map.html)
+// MapTiler-Key: hier eintragen oder leer lassen (dann im Karten-Dialog einmal eingeben, nur im Browser gespeichert).
+const MAPTILER_KEY = '';
+const MAPKEY_STORE = 'ecgViewer.maptilerKey', MAPOPT_STORE = 'ecgViewer.map';
+let urlMapKey = '';
+function mapKey() {
+    if (MAPTILER_KEY) return MAPTILER_KEY;
+    if (urlMapKey) return urlMapKey;
+    try { return sessionStorage.getItem(MAPKEY_STORE) || localStorage.getItem(MAPKEY_STORE) || ''; } catch (e) { return ''; }
+}
+function mapOpts() {
+    let o = {};
+    try { o = JSON.parse(localStorage.getItem(MAPOPT_STORE) || '{}') || {}; } catch (e) {}
+    return { markers: o.markers !== false, route: o.route !== false, target: o.target !== false, thin: !!o.thin, sync: o.sync !== false,
+             altOffset: Number.isFinite(+o.altOffset) && o.altOffset !== '' && o.altOffset != null ? +o.altOffset : 48 };
+}
+function nearIdx(T, t) {
+    const i = lb(T, t);
+    if (i <= 0) return 0;
+    if (i >= T.length) return T.length - 1;
+    return (t - T[i - 1] <= T[i] - t) ? i - 1 : i;
+}
+function buildMapJson(targetTime, o) {
+    const G = D.gps, n = G.T.length;
+    const route = [];
+    if (o.route) {
+        const step = (o.thin && n > 2000) ? Math.max(1, Math.floor(n / 2000)) : 1;
+        for (let i = 0; i < n; i++) {
+            if (step > 1 && !(i % step === 0 || i === n - 1)) continue;
+            const hi = D.hr.T.length ? nearIdx(D.hr.T, G.T[i]) : -1;
+            route.push({ lat: G.lat[i], lon: G.lon[i], alt: Math.trunc(Math.max(0, G.alt[i] - o.altOffset)),
+                         hr: hi >= 0 ? Math.trunc(D.hr.V[hi]) : 0, time: G.T[i], speed: G.speed[i] * 3.6, acc: G.acc[i] });
+        }
+    }
+    const markers = [];
+    if (o.markers) for (const m of D.markers) {
+        const j = nearIdx(G.T, m.time);
+        markers.push({ lat: G.lat[j], lon: G.lon[j], type: m.type, time: m.time });
+    }
+    const out = { startTime: D.startMs, route, markers };
+    if (o.target && targetTime != null) out.targetTime = targetTime;
+    return JSON.stringify(out);
+}
+
+let mapWin = null, mapPending = null, mapKeyUsed = '';
+function openMap(targetTime) {
+    const key = mapKey(), o = mapOpts();
+    mapPending = buildMapJson(targetTime, o);
+    if (mapWin && !mapWin.closed && mapKeyUsed === key) {
+        mapWin.postMessage({ type: 'ecg-map-route', json: mapPending }, '*');
+        mapWin.focus(); return;
+    }
+    const url = 'map.html?key=' + encodeURIComponent(key) + '&flyover=true';
+    mapKeyUsed = key;
+    if (mapWin && !mapWin.closed) { mapWin.location.href = url; mapWin.focus(); }   // anderer Key: Seite neu laden
+    else {
+        mapWin = window.open(url, 'ecg-map-popup', 'popup=yes,width=720,height=540,resizable=yes');
+        if (!mapWin) alert('Popup wurde blockiert – bitte Popups für diese Seite erlauben.');
+    }
+}
+window.addEventListener('message', ev => {
+    if (ev.source === mapWin && ev.data && ev.data.type === 'ecg-map-ready' && mapPending)
+        mapWin.postMessage({ type: 'ecg-map-route', json: mapPending }, '*');
+});
+window.addEventListener('message', ev => {   // Cursor von der Karte
+    if (ev.source === mapWin && ev.data && ev.data.type === 'ecg-map-cursor' && mapOpts().sync && D) {
+        setCursor(typeof ev.data.t === 'number' ? ev.data.t : null, true);
+    }
+});
+function openExternal(t) {   // ohne Key: Position am Cursor in OpenStreetMap öffnen (Pendant zum geo:-Intent der App)
+    const j = nearIdx(D.gps.T, t), lat = D.gps.lat[j], lon = D.gps.lon[j];
+    window.open('https://www.openstreetmap.org/?mlat=' + lat + '&mlon=' + lon + '#map=17/' + lat + '/' + lon, '_blank', 'noopener');
+}
+
+function openMapDlg(guide) {
+    const o = mapOpts();
+    $('mapGuide').classList.toggle('hidden', !guide);
+    $('mapKeyIn').value = mapKey();
+    $('moMarkers').checked = o.markers; $('moRoute').checked = o.route; $('moTarget').checked = o.target;
+    $('moThin').checked = o.thin; $('moSync').checked = o.sync; $('moAlt').value = o.altOffset;
+    $('mapDlg').classList.remove('hidden');
+    $('mapKeyIn').focus();
+}
+function saveMapDlg() {
+    const k = $('mapKeyIn').value.trim();
+    try {
+        if (k) localStorage.setItem(MAPKEY_STORE, k); else localStorage.removeItem(MAPKEY_STORE);
+        sessionStorage.removeItem(MAPKEY_STORE);
+        localStorage.setItem(MAPOPT_STORE, JSON.stringify({ markers: $('moMarkers').checked, route: $('moRoute').checked,
+            target: $('moTarget').checked, thin: $('moThin').checked, sync: $('moSync').checked, altOffset: $('moAlt').value === '' ? 48 : +$('moAlt').value }));
+    } catch (e) {}
+    urlMapKey = '';
+}
+$('mapKeyCreate').onclick = () => window.open('https://cloud.maptiler.com/maps/', '_blank', 'noopener');
+$('mapDlgClose').onclick = () => $('mapDlg').classList.add('hidden');
+$('mapDlgSave').onclick = () => { saveMapDlg(); $('mapDlg').classList.add('hidden'); };
+$('mapDlgOpen').onclick = () => {
+    saveMapDlg(); $('mapDlg').classList.add('hidden');
+    if (mapKey().length > 5) openMap(cur); else openMapDlg(true);
+};
+$('mapDlg').addEventListener('pointerdown', e => { if (e.target === $('mapDlg')) $('mapDlg').classList.add('hidden'); });
+$('btnMapOpt').onclick = () => openMapDlg(mapKey().length <= 5);
+$('btnMap').oncontextmenu = e => { e.preventDefault(); openMapDlg(mapKey().length <= 5); };
+$('btnMap').onclick = () => {
+    if (!D || !D.gps.T.length) return;
+    if (mapKey().length > 5) openMap(cur);
+    else if (cur == null) openMapDlg(true);      // kein Key, kein Cursor: Anleitung zur Key-Einrichtung
+    else openExternal(cur);                      // kein Key, aber Cursor: Position extern öffnen
+};
 
 // ================================================================ Google Drive
 // API-Key: hier eintragen (bei Referrer-Beschränkung unkritisch) oder leer lassen – dann wird er beim ersten Laden
@@ -1316,11 +1620,18 @@ $('btnDrive').onclick = () => { const v = prompt('Google-Drive-Link oder Datei-I
 {
     const q = new URLSearchParams(location.search);
     const start = q.get('id') || q.get('drive');
-    const k = q.get('key');
+    const k = q.get('key'), mk = q.get('mapkey');
     if (k) {
         urlKey = k.trim();
         try { sessionStorage.setItem(KEY_STORE, urlKey); } catch (e) {}   // übersteht ein Neuladen im selben Tab
         q.delete('key');                                                  // Key nicht in Verlauf/Adresszeile stehen lassen
+    }
+    if (mk) {
+        urlMapKey = mk.trim();
+        try { sessionStorage.setItem(MAPKEY_STORE, urlMapKey); } catch (e) {}
+        q.delete('mapkey');
+    }
+    if (k || mk) {
         try { const u = new URL(location.href); u.search = q.toString() ? '?' + q.toString() : ''; window.history.replaceState(null, '', u); } catch (e) {}
     }
     if (start) loadDrive(start);

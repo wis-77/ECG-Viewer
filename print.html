@@ -247,7 +247,7 @@
 <body>
 
     <div class="header-bar">
-        <h1>ECG Print View (25 mm/s)</h1>
+        <h1 id="print-title">ECG Print View (25 mm/s)</h1>
         <button class="btn btn-secondary" onclick="closeView()">Schließen</button>
     </div>
 
@@ -262,6 +262,14 @@
                     <button class="btn-stepper" onclick="shiftStartTime(1)">+1s</button>
                     <button class="btn-stepper" onclick="shiftStartTime(10)">+10s</button>
                 </div>
+            </div>
+
+            <div class="setting-field">
+                <label for="print-speed">Papiergeschwindigkeit:</label>
+                <select id="print-speed" onchange="generatePrintPages()">
+                    <option value="25" selected>25 mm/s</option>
+                    <option value="50">50 mm/s</option>
+                </select>
             </div>
 
             <div class="setting-field">
@@ -297,6 +305,7 @@
     <script>
         let ecgDataPoints = [];
         let ecgSampleRate = 130;
+        let ecgInterpolation = null;
         let startTimeMillis = 0;
         let originalFileName = "ECG Recording";
         let ecgMaxX = 0;
@@ -367,6 +376,7 @@
             ecgSampleRate = Number.isFinite(providedSampleRate) && providedSampleRate > 0
                 ? providedSampleRate
                 : 130;
+            ecgInterpolation = validateEcgInterpolation(data.ecgInterpolation);
 
             ecgDataPoints = [];
             ecgMaxX = 0;
@@ -395,13 +405,45 @@
             ecgMaxX = ecgDataPoints[ecgDataPoints.length - 1][0];
             currentStartSec = Math.floor((startIndex + 1) / ecgSampleRate);
 
-            const totalSecs = Math.ceil(ecgMaxX - currentStartSec);
-            const defaultRows = Math.max(1, Math.min(Math.ceil(totalSecs / 10), 12));
+            const secPerRow = 250 / getPrintSpeed();
+            const totalSecs = Math.max(0, ecgMaxX - currentStartSec);
+            const defaultRows = Math.max(1, Math.min(Math.ceil(totalSecs / secPerRow), 12));
             document.getElementById('print-rows-count').value = defaultRows;
-            document.getElementById('print-rows-count').max = Math.max(1, Math.ceil(ecgMaxX / 10));
+            document.getElementById('print-rows-count').max =
+                Math.max(1, Math.min(100, Math.ceil(totalSecs / secPerRow)));
 
             updateTimeDisplay();
             generatePrintPages();
+        }
+
+        function validateEcgInterpolation(settings) {
+            if (settings == null) return null;
+            if (settings.sampleRate !== ecgSampleRate ||
+                !Number.isInteger(settings.factor) || settings.factor < 1 ||
+                !Array.isArray(settings.phases) || settings.phases.length !== settings.factor) {
+                throw new Error("Ungültige EKG-Interpolationsdaten");
+            }
+            for (const phase of settings.phases) {
+                if (!phase || !Array.isArray(phase.offsets) || !Array.isArray(phase.weights) ||
+                    phase.offsets.length !== phase.weights.length) {
+                    throw new Error("Ungültige EKG-Interpolationsphase");
+                }
+            }
+            return settings;
+        }
+
+        function interpolatedEcgValue(index, phase) {
+            const coefficients = ecgInterpolation.phases[phase];
+            let value = 0;
+            for (let i = 0; i < coefficients.offsets.length; i++) {
+                const sampleIndex = Math.max(0, Math.min(ecgDataPoints.length - 1, index + coefficients.offsets[i]));
+                value += ecgDataPoints[sampleIndex][1] * coefficients.weights[i];
+            }
+            return value;
+        }
+
+        function getPrintSpeed() {
+            return Number(document.getElementById('print-speed').value);
         }
 
         function updateTimeDisplay() {
@@ -501,11 +543,17 @@
             }
 
             const startSec = currentStartSec;
-            const rowsToDraw = parseInt(document.getElementById('print-rows-count').value) || 4;
+            const speed = getPrintSpeed();
+            const secPerRow = 250 / speed;
+            const rowsInput = document.getElementById('print-rows-count');
+            const maxRows = Math.max(1, Math.min(100, Math.ceil(Math.max(0, ecgMaxX - startSec) / secPerRow)));
+            rowsInput.max = maxRows;
+            const rowsToDraw = Math.max(1, Math.min(maxRows, parseInt(rowsInput.value) || 4));
+            rowsInput.value = rowsToDraw;
             const ampScaleValue = parseFloat(document.getElementById('print-amplitude').value) || 1000;
 
-            const secPerRow = 10;
             const rowsPerPage = 4; // Max rows per A4 page
+            document.getElementById('print-title').textContent = `ECG Print View (${speed} mm/s)`;
 
             const dateStr = formatDate(startTimeMillis);
 
@@ -534,7 +582,7 @@
                             <div class="print-page-meta">
                                 <span>Datei: <b>${originalFileName}</b></span>
                                 <span>Datum: <b>${dateStr}</b></span>
-                                <span>Maßstab: <b>25 mm/s</b></span>
+                                <span>Maßstab: <b>${speed} mm/s</b></span>
                                 <span>Y-Skalierung: <b>${ampScaleValue} µV / cm</b></span>
                                 <span>Seite: <b>${pageNum} / ${totalPages}</b></span>
                             </div>
@@ -548,7 +596,7 @@
                     container.appendChild(wrapperDiv);
                 }
 
-                // Render individual 10-second row
+                // Render one row; its duration depends on paper speed.
                 const rowDiv = document.createElement('div');
                 rowDiv.className = 'ecg-print-row';
 
@@ -557,7 +605,7 @@
                 rowDiv.appendChild(gridSvg);
 
                 // 2. Plotting Trace Line
-                const traceSvg = createEcgTraceSVG(rowStart, rowEnd, ampScaleValue);
+                const traceSvg = createEcgTraceSVG(rowStart, rowEnd, ampScaleValue, speed);
                 rowDiv.appendChild(traceSvg);
 
                 // 3. Time label for each row: Tageszeit (e.g. 15:03:07 - 15:03:17)
@@ -621,8 +669,8 @@
             return svg;
         }
 
-        function createEcgTraceSVG(startSec, endSec, ampScale) {
-            const widthMm = 250; // 10s * 25mm/s = 250mm
+        function createEcgTraceSVG(startSec, endSec, ampScale, speed) {
+            const widthMm = 250;
             const heightMm = 35; // Row height
 
             const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -634,52 +682,48 @@
 
             if (ecgDataPoints.length === 0) return svg;
 
-            // Binary search start index
-            let startIndex = 0;
-            let low = 0, high = ecgDataPoints.length - 1;
-            while (low <= high) {
-                let mid = Math.floor((low + high) / 2);
-                if (ecgDataPoints[mid][0] < startSec) {
-                    startIndex = mid;
-                    low = mid + 1;
-                } else {
-                    high = mid - 1;
-                }
+            let low = 0, high = ecgDataPoints.length;
+            while (low < high) {
+                const mid = Math.floor((low + high) / 2);
+                if (ecgDataPoints[mid][0] < startSec) low = mid + 1;
+                else high = mid;
             }
-
-            let pointsInWindow = [];
-            for (let i = startIndex; i < ecgDataPoints.length; i++) {
-                const pt = ecgDataPoints[i];
-                if (pt[0] > endSec) break;
-                if (pt[0] >= startSec) {
-                    pointsInWindow.push(pt);
-                }
-            }
-
-            if (pointsInWindow.length === 0) return svg;
+            const firstIndex = low;
+            let endIndex = firstIndex;
+            while (endIndex < ecgDataPoints.length && ecgDataPoints[endIndex][0] <= endSec) endIndex++;
+            if (firstIndex === endIndex) return svg;
 
             const centerY = heightMm / 2; // 17.5mm
             const uvPerMm = ampScale / 10; // e.g. 1000 / 10 = 100 µV per mm
 
             let pathD = "";
-            for (let i = 0; i < pointsInWindow.length; i++) {
-                const t = pointsInWindow[i][0];
-                const val = pointsInWindow[i][1];
-
-                const x = (t - startSec) * 25; // 25mm/s
+            let started = false;
+            const appendPoint = (t, val) => {
+                const x = (t - startSec) * speed;
                 const y = centerY - (val / uvPerMm);
-
-                if (i === 0) {
-                    pathD += `M ${x.toFixed(2)} ${y.toFixed(2)}`;
-                } else {
-                    pathD += ` L ${x.toFixed(2)} ${y.toFixed(2)}`;
+                pathD += `${started ? " L" : "M"} ${x.toFixed(2)} ${y.toFixed(2)}`;
+                started = true;
+            };
+            if (ecgInterpolation) {
+                for (let i = firstIndex; i < endIndex - 1; i++) {
+                    const t0 = ecgDataPoints[i][0], t1 = ecgDataPoints[i + 1][0];
+                    for (let phase = 0; phase < ecgInterpolation.factor; phase++) {
+                        const fraction = phase / ecgInterpolation.factor;
+                        appendPoint(t0 + (t1 - t0) * fraction, interpolatedEcgValue(i, phase));
+                    }
+                }
+                const lastIndex = endIndex - 1;
+                appendPoint(ecgDataPoints[lastIndex][0], interpolatedEcgValue(lastIndex, 0));
+            } else {
+                for (let i = firstIndex; i < endIndex; i++) {
+                    appendPoint(ecgDataPoints[i][0], ecgDataPoints[i][1]);
                 }
             }
 
             const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
             path.setAttribute("d", pathD);
             path.setAttribute("stroke", "#112233");
-            path.setAttribute("stroke-width", "0.45");
+            path.setAttribute("stroke-width", "0.35");
             path.setAttribute("fill", "none");
             svg.appendChild(path);
 
