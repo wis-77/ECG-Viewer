@@ -407,7 +407,7 @@
 
             const secPerRow = 250 / getPrintSpeed();
             const totalSecs = Math.max(0, ecgMaxX - currentStartSec);
-            const defaultRows = Math.max(1, Math.min(Math.ceil(totalSecs / secPerRow), 12));
+            const defaultRows = Math.max(1, Math.min(Math.ceil(totalSecs / secPerRow), 4));
             document.getElementById('print-rows-count').value = defaultRows;
             document.getElementById('print-rows-count').max =
                 Math.max(1, Math.min(100, Math.ceil(totalSecs / secPerRow)));
