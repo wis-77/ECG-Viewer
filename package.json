@@ -1,0 +1,13 @@
+{
+  "name": "ecg-viewer-build",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "sync-pages": "node publish.mjs"
+  },
+  "devDependencies": {
+    "javascript-obfuscator": "^4.1.1",
+    "terser": "^5.51.4"
+  }
+}

@@ -1,15 +1,52 @@
 # ECG Viewer
 
 Browser-Viewer für `.ecg`-Aufnahmen (EKG, ACC, Puls, RR mit Markern, Poincaré) mit Druckansicht.
-Reines HTML/JS, kein Build, kein Server. Alle Daten bleiben im Browser.
+Reines HTML/JS, kein Server. Alle Daten bleiben im Browser; Node.js wird nur zum Erstellen des Produktions-Builds benötigt.
 
 ## Dateien
 - `index.html` – Viewer
 - `print.html` – Druckansicht (muss im selben Ordner liegen)
 - `map.html` – 3D-Karte/Flyover (MapLibre + MapTiler), wird vom Viewer geöffnet; ebenfalls im selben Ordner
 
+## Lokalen Produktions-Build erstellen
+Voraussetzung ist eine installierte Node.js-LTS-Version. Im Projektordner die festgelegten Build-Abhängigkeiten installieren:
+
+```powershell
+npm.cmd ci
+```
+
+Danach den Produktions-Build erstellen:
+
+```powershell
+npm.cmd run build
+```
+
+Der Build legt `dist/` mit `index.html`, `map.html`, `print.html` sowie den zugehörigen minifizierten und obfuskierten
+JavaScript-Dateien an. Die Quelldateien bleiben unverändert. Zum Veröffentlichen den Inhalt von `dist/` in das
+öffentliche Pages-Projekt kopieren und dort committen. `dist/` und `node_modules/` werden in diesem Quellprojekt
+nicht mitversioniert.
+
+### Build ins öffentliche Pages-Repository kopieren
+Das öffentliche Pages-Repository unter `..\ECG-Viewer-Pages` neben diesem Projekt klonen. Anschließend erstellt
+der folgende Befehl den Build und kopiert dessen Dateien ins Stammverzeichnis des Pages-Repositories:
+
+```powershell
+npm.cmd run sync-pages
+```
+
+Der Befehl bricht ab, wenn der Pages-Ordner kein Git-Repository ist oder uncommittete Änderungen enthält. Er pusht
+nicht automatisch. Im Pages-Repository die Änderungen prüfen und veröffentlichen:
+
+```powershell
+git add index.html index.js map.html map.js print.html print.js
+git commit -m "Update Pages build"
+git push
+```
+
+Obfuscation erschwert das Lesen des Codes, verhindert aber nicht, dass Besucher ihn herunterladen oder untersuchen.
+
 ## Auf GitHub Pages veröffentlichen
-1. Repo anlegen, beide Dateien ins Hauptverzeichnis legen.
+1. Den Inhalt von `dist/` ins Hauptverzeichnis des Pages-Repositories legen.
 2. Settings → Pages → *Deploy from a branch* → `main` / `(root)`.
 3. Aufruf: `https://<user>.github.io/<repo>/`
 4. Popups für die Seite erlauben (Druckansicht, ausgekoppeltes Poincaré-Fenster).
