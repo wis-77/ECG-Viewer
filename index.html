@@ -967,14 +967,28 @@ function drawBase(k) {
     // ---- Zeit-Raster (an Uhrzeit ausgerichtet)
     let step = TSTEPS[TSTEPS.length - 1];
     for (const s of TSTEPS) if (span / s <= pw / 90) { step = s; break; }
+    if (k === 'ecg' && span <= 10) step = 0.2;
     const base = D.startMs / 1000, dec = step < 1 ? 1 : 0, lastKey = lastVisibleKey();
     ctx.textAlign = 'center';
     for (let ta = Math.ceil((base + a) / step) * step; ta <= base + b + 1e-9; ta += step) {
         const t = ta - base, x = Math.round(X(t)) + .5;
+        const secondLine = k === 'ecg' && span <= 10 && Math.abs(t - Math.round(t)) < 1e-7;
+        if (secondLine) continue;
+        ctx.lineWidth = 1;
         ctx.strokeStyle = '#f3dada';
         ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke();
-        if (k === lastKey) { ctx.fillStyle = '#6b7785'; ctx.fillText(tod(t, dec), x, H - 9); }
+        if (k === lastKey && k !== 'ecg') { ctx.fillStyle = '#6b7785'; ctx.fillText(tod(t, dec), x, H - 9); }
     }
+    if (k === 'ecg' && span <= 10) {
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#e6b8b8';
+        for (let ta = Math.ceil((base + a) / 1) * 1; ta <= base + b + 1e-9; ta += 1) {
+            const t = ta - base, x = Math.round(X(t)) + .5;
+            ctx.beginPath(); ctx.moveTo(x, top); ctx.lineTo(x, top + ph); ctx.stroke();
+            if (k === lastKey) { ctx.fillStyle = '#6b7785'; ctx.fillText(tod(t, 0), x, H - 9); }
+        }
+    }
+    ctx.lineWidth = 1;
     ctx.strokeStyle = '#e6b8b8';
     ctx.strokeRect(PAD.l + .5, top + .5, pw - 1, ph - 1);
 
